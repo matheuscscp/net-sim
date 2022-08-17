@@ -1,7 +1,13 @@
 package main
 
-import "fmt"
+import (
+	"os"
+
+	"github.com/matheuscscp/net-sim/cmd"
+)
 
 func main() {
-	fmt.Println("hello world")
+	if err := cmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }
