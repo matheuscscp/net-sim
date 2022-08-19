@@ -3,6 +3,7 @@ module github.com/matheuscscp/net-sim
 go 1.18
 
 require (
+	github.com/google/gopacket v1.1.19
 	github.com/spf13/cobra v1.5.0
 	github.com/stretchr/testify v1.8.0
 )
