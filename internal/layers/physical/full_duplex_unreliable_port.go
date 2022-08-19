@@ -5,45 +5,52 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
+
+	"github.com/matheuscscp/net-sim/internal/common"
 )
 
 type (
-	// FullDuplexUnreliablePort represents a hypothetical port
-	// where you can send and receive bytes at the same time.
-	// Outbound bytes are not guaranteed to reach the other end.
+	// FullDuplexUnreliablePort represents a hypothetical guided
+	// medium where you can send and receive bytes at the same time.
+	// No guarantee is provided about the delivery/integrity.
 	FullDuplexUnreliablePort interface {
 		Send(ctx context.Context, payload []byte) (n int, err error)
-		Recv(ctx context.Context, buf []byte) (n int, err error)
+		Recv(ctx context.Context, payloadBuf []byte) (n int, err error)
 		TurnOn(ctx context.Context) error
 		TurnOff() error
+		OperStatus() common.OperStatus
 		Close() error
 	}
 
 	// FullDuplexUnreliablePortConfig contains the UDP configs for
 	// the concrete implementation of FullDuplexUnreliablePort.
 	FullDuplexUnreliablePortConfig struct {
-		RecvUDPEndpoint string
-		SendUDPEndpoint string
+		RecvUDPEndpoint string `json:"recvUDPEndpoint"`
+		SendUDPEndpoint string `json:"sendUDPEndpoint"`
 	}
 
 	fullDuplexUnreliablePort struct {
-		dialer *net.Dialer
 		conf   *FullDuplexUnreliablePortConfig
 		conn   *net.UDPConn
+		dialer *net.Dialer
 	}
 )
 
 // NewFullDuplexUnreliablePort creates a FullDuplexUnreliablePort from config.
-func NewFullDuplexUnreliablePort(ctx context.Context, conf *FullDuplexUnreliablePortConfig) (FullDuplexUnreliablePort, error) {
+func NewFullDuplexUnreliablePort(
+	ctx context.Context,
+	conf FullDuplexUnreliablePortConfig,
+) (FullDuplexUnreliablePort, error) {
 	recvAddr, err := net.ResolveUDPAddr("udp", conf.RecvUDPEndpoint)
 	if err != nil {
-		return nil, fmt.Errorf("error resolving UDP address of recv endpoint: %w", err)
+		return nil, fmt.Errorf("error resolving udp address of recv endpoint: %w", err)
 	}
 	port := &fullDuplexUnreliablePort{
+		conf: &conf,
 		dialer: &net.Dialer{
 			LocalAddr: recvAddr,
 		},
-		conf: conf,
 	}
 	if err := port.TurnOn(ctx); err != nil {
 		return nil, fmt.Errorf("error turning port on: %w", err)
@@ -52,6 +59,9 @@ func NewFullDuplexUnreliablePort(ctx context.Context, conf *FullDuplexUnreliable
 }
 
 func (f *fullDuplexUnreliablePort) Send(ctx context.Context, payload []byte) (n int, err error) {
+	if len(payload) == 0 {
+		return 0, common.ErrCannotSendEmpty
+	}
 	c := net.Conn(f.conn)
 	if d, ok := ctx.Deadline(); ok {
 		if err := c.SetWriteDeadline(d); err != nil {
@@ -61,14 +71,32 @@ func (f *fullDuplexUnreliablePort) Send(ctx context.Context, payload []byte) (n 
 	return c.Write(payload)
 }
 
-func (f *fullDuplexUnreliablePort) Recv(ctx context.Context, buf []byte) (n int, err error) {
+func (f *fullDuplexUnreliablePort) Recv(ctx context.Context, payloadBuf []byte) (n int, err error) {
 	c := net.Conn(f.conn)
-	if d, ok := ctx.Deadline(); ok {
-		if err := c.SetReadDeadline(d); err != nil {
-			return 0, fmt.Errorf("error setting read deadline for udp socket: %w", err)
+
+	// read in a separate thread
+	ch := make(chan struct{})
+	go func() {
+		defer close(ch)
+		err = c.SetReadDeadline(time.Time{}) // initially, no timeout
+		if err != nil {
+			n, err = 0, fmt.Errorf("error setting read deadline to zero: %w", err)
+		} else {
+			n, err = c.Read(payloadBuf)
 		}
+	}()
+
+	// wait for ctx cancel
+	select {
+	case <-ctx.Done():
+		if err := c.SetReadDeadline(time.Now()); err != nil { // force timeout for ongoing blocked read
+			return 0, fmt.Errorf("error forcing timeout after context done: %w", err)
+		}
+		<-ch
+		return 0, ctx.Err()
+	case <-ch:
+		return
 	}
-	return c.Read(buf)
 }
 
 func (f *fullDuplexUnreliablePort) TurnOn(ctx context.Context) error {
@@ -77,11 +105,11 @@ func (f *fullDuplexUnreliablePort) TurnOn(ctx context.Context) error {
 	}
 	conn, err := f.dialer.DialContext(ctx, "udp", f.conf.SendUDPEndpoint)
 	if err != nil {
-		return fmt.Errorf("error dialing UDP: %w", err)
+		return fmt.Errorf("error dialing udp: %w", err)
 	}
 	udpConn, ok := conn.(*net.UDPConn)
 	if !ok {
-		errMsg := "conn is not UDP, closing"
+		errMsg := "conn is not udp, closing"
 		if err := conn.Close(); err != nil {
 			return fmt.Errorf("%s. error closing conn: %w", errMsg, err)
 		}
@@ -100,6 +128,13 @@ func (f *fullDuplexUnreliablePort) TurnOff() error {
 		return c.Close()
 	}
 	return nil
+}
+
+func (f *fullDuplexUnreliablePort) OperStatus() common.OperStatus {
+	if f.conn == nil {
+		return common.OperStatusDown
+	}
+	return common.OperStatusUp
 }
 
 func (f *fullDuplexUnreliablePort) Close() error {
