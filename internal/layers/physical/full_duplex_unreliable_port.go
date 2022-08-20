@@ -63,12 +63,30 @@ func (f *fullDuplexUnreliablePort) Send(ctx context.Context, payload []byte) (n 
 		return 0, common.ErrCannotSendEmpty
 	}
 	c := net.Conn(f.conn)
-	if d, ok := ctx.Deadline(); ok {
-		if err := c.SetWriteDeadline(d); err != nil {
-			return 0, fmt.Errorf("error setting write deadline for udp socket: %w", err)
+
+	// write in a separate thread
+	ch := make(chan struct{})
+	go func() {
+		defer close(ch)
+		err = c.SetWriteDeadline(time.Time{}) // initially, no timeout
+		if err != nil {
+			n, err = 0, fmt.Errorf("error setting write deadline to zero: %w", err)
+		} else {
+			n, err = c.Write(payload)
 		}
+	}()
+
+	// wait for ctx cancel
+	select {
+	case <-ctx.Done():
+		if err := c.SetWriteDeadline(time.Now()); err != nil { // force timeout for ongoing blocked write
+			return 0, fmt.Errorf("error forcing timeout after context done: %w", err)
+		}
+		<-ch
+		return 0, ctx.Err()
+	case <-ch:
+		return
 	}
-	return c.Write(payload)
 }
 
 func (f *fullDuplexUnreliablePort) Recv(ctx context.Context, payloadBuf []byte) (n int, err error) {
