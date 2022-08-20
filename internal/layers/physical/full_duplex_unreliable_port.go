@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/matheuscscp/net-sim/internal/common"
@@ -15,6 +16,7 @@ type (
 	// medium where you can send and receive bytes at the same time.
 	// No guarantee is provided about the delivery/integrity.
 	FullDuplexUnreliablePort interface {
+		// Send is thread-safe.
 		Send(ctx context.Context, payload []byte) (n int, err error)
 		Recv(ctx context.Context, payloadBuf []byte) (n int, err error)
 		TurnOn(ctx context.Context) error
@@ -34,6 +36,7 @@ type (
 		conf   *FullDuplexUnreliablePortConfig
 		conn   *net.UDPConn
 		dialer *net.Dialer
+		sendMu sync.Mutex
 	}
 )
 
@@ -62,6 +65,10 @@ func (f *fullDuplexUnreliablePort) Send(ctx context.Context, payload []byte) (n 
 	if len(payload) == 0 {
 		return 0, common.ErrCannotSendEmpty
 	}
+
+	f.sendMu.Lock()
+	defer f.sendMu.Unlock()
+
 	c := net.Conn(f.conn)
 
 	// write in a separate thread
