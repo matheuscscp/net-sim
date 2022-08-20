@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/matheuscscp/net-sim/internal/common"
 	"github.com/matheuscscp/net-sim/internal/layers/physical"
 
 	"github.com/stretchr/testify/assert"
@@ -80,24 +79,4 @@ func TestReadLessBytesThanBufSize(t *testing.T) {
 
 	assert.NoError(t, port1.Close())
 	assert.NoError(t, port2.Close())
-}
-
-func TestTurnPortOffAndOn(t *testing.T) {
-	port, err := physical.NewFullDuplexUnreliablePort(context.Background(), physical.FullDuplexUnreliablePortConfig{
-		RecvUDPEndpoint: ":50001",
-		SendUDPEndpoint: ":50002",
-	})
-	require.NoError(t, err)
-	require.NotNil(t, port)
-	assert.Equal(t, common.OperStatusUp, port.OperStatus())
-	require.NoError(t, port.TurnOff())
-	assert.Equal(t, common.OperStatusDown, port.OperStatus())
-	require.NoError(t, port.TurnOn(context.Background()))
-	assert.Equal(t, common.OperStatusUp, port.OperStatus())
-	require.NoError(t, port.TurnOff())
-	assert.Equal(t, common.OperStatusDown, port.OperStatus())
-	require.NoError(t, port.TurnOn(context.Background()))
-	assert.Equal(t, common.OperStatusUp, port.OperStatus())
-	assert.NoError(t, port.Close())
-	assert.Equal(t, common.OperStatusDown, port.OperStatus())
 }

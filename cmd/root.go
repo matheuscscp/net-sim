@@ -1,26 +1,34 @@
 package cmd
 
 import (
-	"github.com/matheuscscp/net-sim/internal/layers/link"
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
 
+var rootCmd = &cobra.Command{
+	Use:   "net-sim",
+	Short: "net-sim is a networking simulator for learning purposes",
+}
+
 func Execute() error {
-	rootCmd := &cobra.Command{
-		Use:   "net-sim",
-		Short: "net-sim is a networking simulator for learning purposes",
-	}
-
-	switchCmd := &cobra.Command{
-		Use:   "switch <spec-file>",
-		Short: "switch simulates an L2 switch",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return link.RunSwitch(args[0])
-		},
-	}
-
-	rootCmd.AddCommand(switchCmd)
 	return rootCmd.Execute()
+}
+
+func contextWithCancelOnInterrupt(ctx context.Context) (context.Context, context.CancelFunc) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		defer cancel()
+		<-sigs
+		signal.Stop(sigs)
+		close(sigs)
+		for range sigs {
+		}
+	}()
+	return ctx, cancel
 }
