@@ -18,24 +18,24 @@ import (
 type (
 	// EthernetCard represents a hypothetical ethernet network interface
 	// card, composed by a physical port and a MAC address.
-	// Close() can only be called after ShutdownRecv() has been called
-	// and the Recv() channels were drained (in this order).
-	// A nil element is sent to both channels to indicate end of session.
 	EthernetCard interface {
 		Send(ctx context.Context, frame *gplayers.Ethernet) error
 		Recv() (<-chan *gplayers.Ethernet, <-chan error)
-		ShutdownRecv()
 		Close() error
 	}
 
 	// EthernetCardConfig contains the configs for the
 	// concrete implementation of EthernetCard.
 	EthernetCardConfig struct {
-		MACAddress string                                   `json:"macAddress"`
-		Medium     *physical.FullDuplexUnreliablePortConfig `json:"fullDuplexUnreliablePortConfig"`
+		// ForwardingMode keeps inbound frames with wrong dst address.
+		ForwardingMode bool   `json:"forwardingMode"`
+		MACAddress     string `json:"macAddress"`
+
+		Medium *physical.FullDuplexUnreliablePortConfig `json:"fullDuplexUnreliablePortConfig"`
 	}
 
 	ethernetCard struct {
+		conf          *EthernetCardConfig
 		macAddress    gopacket.Endpoint
 		medium        physical.FullDuplexUnreliablePort
 		ch            chan *gplayers.Ethernet
@@ -69,6 +69,7 @@ func NewEthernetCard(
 		return nil, fmt.Errorf("error parsing MAC address: %w", err)
 	}
 	nic := &ethernetCard{
+		conf:       &conf,
 		macAddress: gplayers.NewMACEndpoint(macAddress),
 	}
 	if len(medium) == 1 {
@@ -120,16 +121,16 @@ func (e *ethernetCard) Recv() (<-chan *gplayers.Ethernet, <-chan error) {
 }
 
 func (e *ethernetCard) recv() {
-	e.ch = make(chan *gplayers.Ethernet)
-	e.err = make(chan error)
+	e.ch = make(chan *gplayers.Ethernet, MaxQueueSize)
+	e.err = make(chan error, MaxQueueSize)
 	var ctx context.Context
 	ctx, e.cancelRecvCtx = context.WithCancel(context.Background())
 	e.recvClosedCh = make(chan struct{})
 
 	go func() {
 		defer func() {
-			go func() { e.ch <- nil }()
-			go func() { e.err <- nil }()
+			close(e.ch)
+			close(e.err)
 			close(e.recvClosedCh)
 		}()
 		for {
@@ -139,10 +140,10 @@ func (e *ethernetCard) recv() {
 				if errors.Is(err, context.Canceled) {
 					return
 				}
-				go func() { e.err <- fmt.Errorf("error recv()ing frame: %w", err) }()
+				e.err <- fmt.Errorf("error recv()ing frame: %w", err)
 				continue
 			}
-			go e.decap(buf[:n])
+			e.decap(buf[:n])
 		}
 	}()
 }
@@ -172,30 +173,25 @@ func (e *ethernetCard) decap(frame []byte) {
 		if !isEth {
 			return errors.New("link layer is not ethernet")
 		}
+		if !e.conf.ForwardingMode && e.macAddress != gplayers.NewMACEndpoint(eth.DstMAC) {
+			eth = nil
+		}
 
 		return nil
 	}()
-	if err == nil {
-		e.ch <- eth
-	} else {
+	if err != nil {
 		e.err <- err
+	} else if eth != nil {
+		e.ch <- eth
 	}
-}
-
-func (e *ethernetCard) ShutdownRecv() {
-	if e.cancelRecvCtx == nil {
-		return
-	}
-	e.cancelRecvCtx()
-	e.cancelRecvCtx = nil
 }
 
 func (e *ethernetCard) Close() error {
-	if e.cancelRecvCtx != nil {
-		return errors.New("cannot call Close() before ShutdownRecv()")
+	if e.cancelRecvCtx == nil {
+		return nil
 	}
+	e.cancelRecvCtx()
+	e.cancelRecvCtx = nil
 	<-e.recvClosedCh
-	close(e.ch)
-	close(e.err)
 	return e.medium.Close()
 }
