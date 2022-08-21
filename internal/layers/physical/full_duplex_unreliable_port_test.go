@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCreateConnectedPorts(t *testing.T) {
+func TestConnectedPorts(t *testing.T) {
 	port1, err := physical.NewFullDuplexUnreliablePort(context.Background(), physical.FullDuplexUnreliablePortConfig{
 		RecvUDPEndpoint: ":50001",
 		SendUDPEndpoint: ":50002",

@@ -34,26 +34,27 @@ type (
 //
 // If len(conf.Ports) is zero, then len(ports) must be
 // greater than or equal to three.
+//
+// The returned function blocks until the switch has stopped
+// running, which happens upon the given ctx being cancelled.
 func RunSwitch(
 	ctx context.Context,
 	conf SwitchConfig,
 	ports ...EthernetPort,
-) error {
+) (func(), error) {
 	if len(ports) > 0 && len(conf.Ports) > 0 {
-		return errors.New("specify one of ports or conf.Ports, not both")
+		return nil, errors.New("specify one of ports or conf.Ports, not both")
 	}
 	if len(ports) == 0 && len(conf.Ports) == 0 {
-		return errors.New("specify one of ports or conf.Ports")
+		return nil, errors.New("specify one of ports or conf.Ports")
 	}
-	if len(conf.Ports) > 0 && len(conf.Ports) < 3 {
-		return errors.New("switch will only run with a least three ports")
-	}
-	if len(ports) > 0 && len(ports) < 3 {
-		return errors.New("switch will only run with a least three ports")
+	if (len(conf.Ports) > 0 && len(conf.Ports) < 3) ||
+		(len(ports) > 0 && len(ports) < 3) {
+		return nil, errors.New("switch will only run with a least three ports")
 	}
 	for i, port := range ports {
 		if port == nil {
-			return fmt.Errorf("port number %d is nil", i)
+			return nil, fmt.Errorf("port number %d is nil", i)
 		}
 	}
 	s := &switchImpl{
@@ -61,8 +62,11 @@ func RunSwitch(
 	}
 	if len(ports) > 0 {
 		for i, port := range ports {
+			if port == nil {
+				return nil, fmt.Errorf("port number %d is nil", i)
+			}
 			if !port.ForwardingMode() {
-				return fmt.Errorf("port number %d is not in forwarding mode", i)
+				return nil, fmt.Errorf("port number %d is not in forwarding mode", i)
 			}
 		}
 		s.ports = ports
@@ -75,33 +79,47 @@ func RunSwitch(
 				for j := i - 1; 0 <= j; j-- {
 					s.ports[j].Close()
 				}
-				return fmt.Errorf("error creating ethernet port number %d: %w", i, err)
+				return nil, fmt.Errorf("error creating ethernet port number %d: %w", i, err)
 			}
 			s.ports = append(s.ports, port)
 		}
 	}
-	return s.run(ctx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.run(ctx)
+	}()
+	return wg.Wait, nil
 }
 
-func (s *switchImpl) run(ctx context.Context) error {
+func (s *switchImpl) run(ctx context.Context) {
 	var wg sync.WaitGroup
 
 	defer func() {
 		wg.Wait() // wait all port threads first
 		for _, port := range s.ports {
 			port.Close()
-			for range port.Recv() {
-			}
 		}
 	}()
 
-	ctxDone := ctx.Done()
 	var forwardingTable sync.Map
-	portAddressToNumber := make(map[gopacket.Endpoint]int)
-	for i, fromPort := range s.ports {
-		portAddressToNumber[fromPort.MACAddress()] = i
+	storeRoute := func(macAddress gopacket.Endpoint, portNumber int) {
+		oldPortNumber, hasOldRoute := forwardingTable.Load(macAddress)
+		if !hasOldRoute || oldPortNumber.(int) != portNumber {
+			forwardingTable.Store(macAddress, portNumber)
+		}
+	}
 
-		// make local copies so the i-th thread captures references only to its own (i, fromPort) pair
+	portAddressToNumber := make(map[gopacket.Endpoint]int)
+	for i, port := range s.ports {
+		portAddressToNumber[port.MACAddress()] = i
+	}
+
+	ctxDone := ctx.Done()
+	for i, fromPort := range s.ports {
+		// make local copies so the i-th thread captures
+		// references only to its own (i, fromPort) pair
 		i := i
 		fromPort := fromPort
 
@@ -120,9 +138,9 @@ func (s *switchImpl) run(ctx context.Context) error {
 
 					// update forwarding table
 					srcMAC := gplayers.NewMACEndpoint(eth.SrcMAC)
-					forwardingTable.Store(srcMAC, i)
+					storeRoute(srcMAC, i)
 
-					// check if dst mac address matches the port's address
+					// check if dst mac address matches the address of one of the ports
 					dstMAC := gplayers.NewMACEndpoint(eth.DstMAC)
 					if j, ok := portAddressToNumber[dstMAC]; ok {
 						l.
@@ -157,6 +175,4 @@ func (s *switchImpl) run(ctx context.Context) error {
 			}
 		}()
 	}
-
-	return nil
 }

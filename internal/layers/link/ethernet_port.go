@@ -20,9 +20,10 @@ import (
 
 type (
 	// EthernetPort represents a hypothetical ethernet network interface
-	// card, composed by a physical port and a MAC address. Inbound frames
-	// with dst MAC address not matching the port's MAC address will be
-	// discarded, unless if running on "forwarding mode".
+	// card, composed by a physical port and a MAC address.
+	//
+	// Inbound frames with dst MAC address not matching the port's MAC
+	// address will be discarded, unless if running on "forwarding mode".
 	EthernetPort interface {
 		Send(ctx context.Context, frame *gplayers.Ethernet) error
 		Recv() <-chan *gplayers.Ethernet
@@ -43,22 +44,23 @@ type (
 
 	ethernetPort struct {
 		conf       *EthernetPortConfig
+		l          logrus.FieldLogger
 		macAddress gopacket.Endpoint
 		medium     physical.FullDuplexUnreliablePort
 		out        chan *outFrame
 		in         chan *gplayers.Ethernet
 		cancelCtx  func()
 		wg         sync.WaitGroup
-		l          logrus.FieldLogger
 	}
 
 	outFrame struct {
-		ctx context.Context
-		buf []byte
+		ctx           context.Context
+		buf           []byte
+		dstMACAddress net.HardwareAddr
 	}
 )
 
-// NewEthernetPort creates a EthernetPort from config.
+// NewEthernetPort creates an EthernetPort from config.
 // If conf.Medium is nil, then a medium must be passed.
 func NewEthernetPort(
 	ctx context.Context,
@@ -83,8 +85,10 @@ func NewEthernetPort(
 	}
 	nic := &ethernetPort{
 		conf:       &conf,
-		macAddress: gplayers.NewMACEndpoint(macAddress),
 		l:          logrus.WithField("port_mac_address", conf.MACAddress),
+		macAddress: gplayers.NewMACEndpoint(macAddress),
+		out:        make(chan *outFrame, MaxQueueSize),
+		in:         make(chan *gplayers.Ethernet, MaxQueueSize),
 	}
 	if len(medium) == 1 {
 		nic.medium = medium[0]
@@ -101,7 +105,6 @@ func (e *ethernetPort) startThreads() {
 	ctxDone := ctx.Done()
 
 	// send
-	e.out = make(chan *outFrame, MaxQueueSize)
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -113,9 +116,11 @@ func (e *ethernetPort) startThreads() {
 				func() {
 					// here we need new a context that must be cancelled if either ctx
 					// or frame.ctx are done
-					ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, frame.ctx)
+					ctx, cancel := pkgcontext.WithCancelOnAnotherContext(frame.ctx, ctx)
 					defer cancel()
-					l := e.l.WithField("frame_buf", frame.buf)
+					l := e.l.
+						WithField("dst_mac_address", frame.dstMACAddress.String()).
+						WithField("frame_buf", frame.buf)
 
 					// send
 					got, err := e.medium.Send(ctx, frame.buf)
@@ -135,7 +140,6 @@ func (e *ethernetPort) startThreads() {
 	}()
 
 	// recv
-	e.in = make(chan *gplayers.Ethernet, MaxQueueSize)
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -173,7 +177,7 @@ func (e *ethernetPort) Send(ctx context.Context, frame *gplayers.Ethernet) error
 	opts := gopacket.SerializeOptions{}
 	payload := gopacket.Payload(frame.Payload)
 	if err := gopacket.SerializeLayers(buf, opts, frame, payload); err != nil {
-		return fmt.Errorf("error serializing ethernet layer")
+		return fmt.Errorf("error serializing ethernet layer: %w", err)
 	}
 
 	// serialize crc32 checksum
@@ -183,7 +187,7 @@ func (e *ethernetPort) Send(ctx context.Context, frame *gplayers.Ethernet) error
 	finalBuf := append(buf.Bytes(), b...)
 
 	// send
-	e.out <- &outFrame{ctx, finalBuf}
+	e.out <- &outFrame{ctx, finalBuf, frame.DstMAC}
 
 	return nil
 }
@@ -192,17 +196,17 @@ func (e *ethernetPort) Recv() <-chan *gplayers.Ethernet {
 	return e.in
 }
 
-func (e *ethernetPort) decap(frame []byte) {
-	l := e.l.WithField("frame_buf", frame)
+func (e *ethernetPort) decap(frameBuf []byte) {
+	l := e.l.WithField("frame_buf", frameBuf)
 
-	var eth *gplayers.Ethernet
+	var frame *gplayers.Ethernet
 	err := func() error {
 		// split frame data and crc
-		if len(frame) < 4 {
+		if len(frameBuf) < 4 {
 			return errors.New("frame has less than 4 bytes, cannot be valid")
 		}
-		siz := len(frame) - 4
-		frameData, crcBuf := frame[:siz], frame[siz:]
+		siz := len(frameBuf) - 4
+		frameData, crcBuf := frameBuf[:siz], frameBuf[siz:]
 
 		// validate crc
 		crc := crc32.Checksum(frameData, crc32.MakeTable(crc32.Castagnoli))
@@ -212,28 +216,33 @@ func (e *ethernetPort) decap(frame []byte) {
 		}
 
 		// decap
-		var isEth bool
-		eth, isEth = gopacket.
-			NewPacket(frameData, gplayers.LayerTypeEthernet, gopacket.Default).
-			LinkLayer().(*gplayers.Ethernet)
-		if !isEth {
-			return errors.New("link layer is not ethernet")
+		pkt := gopacket.NewPacket(frameData, gplayers.LayerTypeEthernet, gopacket.Lazy)
+		frame = pkt.LinkLayer().(*gplayers.Ethernet)
+		if frame == nil || len(frame.Payload) == 0 {
+			return pkt.ErrorLayer().Error()
 		}
-		if !e.ForwardingMode() && e.macAddress != gplayers.NewMACEndpoint(eth.DstMAC) {
-			eth = nil
+		dstMACAddress := gplayers.NewMACEndpoint(frame.DstMAC)
+		if dstMACAddress != BroadcastMACEndpoint &&
+			!e.ForwardingMode() &&
+			e.macAddress != dstMACAddress {
 			l.
-				WithField("frame", eth).
+				WithField("frame", frame).
 				Info("discarding ethernet frame due to unmatched dst mac address")
+			frame = nil
 		}
 
 		return nil
 	}()
+
 	if err != nil {
 		l.
 			WithError(err).
-			Error("error decapsulating ethernet frame")
-	} else if eth != nil {
-		e.in <- eth
+			Error("error decapsulating link layer")
+		return
+	}
+
+	if frame != nil {
+		e.in <- frame
 	}
 }
 
