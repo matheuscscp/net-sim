@@ -4,6 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+
+	"github.com/google/gopacket"
+	gplayers "github.com/google/gopacket/layers"
+	"github.com/sirupsen/logrus"
 )
 
 type (
@@ -24,8 +29,8 @@ type (
 // in, a mapping from src MAC address to port number is cached.
 // No mapping present on the table: frame is forwarded to all
 // other ports.
-// If dst MAC address matches the MAC address of the receiving
-// port, the frame is discarded.
+// If dst MAC address matches the MAC address of one of the
+// switch's ports, the frame is discarded.
 //
 // If len(conf.Ports) is zero, then len(ports) must be
 // greater than or equal to three.
@@ -79,10 +84,79 @@ func RunSwitch(
 }
 
 func (s *switchImpl) run(ctx context.Context) error {
+	var wg sync.WaitGroup
+
 	defer func() {
+		wg.Wait() // wait all port threads first
 		for _, port := range s.ports {
 			port.Close()
+			for range port.Recv() {
+			}
 		}
 	}()
-	return nil // TODO
+
+	ctxDone := ctx.Done()
+	var forwardingTable sync.Map
+	portAddressToNumber := make(map[gopacket.Endpoint]int)
+	for i, fromPort := range s.ports {
+		portAddressToNumber[fromPort.MACAddress()] = i
+
+		// make local copies so the i-th thread captures references only to its own (i, fromPort) pair
+		i := i
+		fromPort := fromPort
+
+		// start port thread
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctxDone:
+					return
+				case eth := <-fromPort.Recv():
+					l := logrus.
+						WithField("from_port", i).
+						WithField("frame", eth)
+
+					// update forwarding table
+					srcMAC := gplayers.NewMACEndpoint(eth.SrcMAC)
+					forwardingTable.Store(srcMAC, i)
+
+					// check if dst mac address matches the port's address
+					dstMAC := gplayers.NewMACEndpoint(eth.DstMAC)
+					if j, ok := portAddressToNumber[dstMAC]; ok {
+						l.
+							WithField("matched_port_number", j).
+							Info("frame discarded because dst mac address matches the address of a port")
+						continue
+					}
+
+					// fetch route and forward
+					dstPort, hasRoute := forwardingTable.Load(dstMAC)
+					if hasRoute {
+						j := dstPort.(int)
+						if err := s.ports[j].Send(ctx, eth); err != nil {
+							l.
+								WithError(err).
+								WithField("to_port", j).
+								Error("error forwarding frame")
+						}
+					} else { // no route, forward to all other ports
+						for j, toPort := range s.ports {
+							if j != i {
+								if err := toPort.Send(ctx, eth); err != nil {
+									l.
+										WithError(err).
+										WithField("to_port", j).
+										Error("error forwarding frame")
+								}
+							}
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	return nil
 }

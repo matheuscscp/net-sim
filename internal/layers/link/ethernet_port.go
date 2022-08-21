@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"net"
+	"sync"
 
 	"github.com/matheuscscp/net-sim/internal/layers/common"
 	"github.com/matheuscscp/net-sim/internal/layers/physical"
@@ -27,6 +28,7 @@ type (
 		Recv() <-chan *gplayers.Ethernet
 		Close() error
 		ForwardingMode() bool
+		MACAddress() gopacket.Endpoint
 	}
 
 	// EthernetPortConfig contains the configs for the
@@ -40,13 +42,14 @@ type (
 	}
 
 	ethernetPort struct {
-		conf                       *EthernetPortConfig
-		macAddress                 gopacket.Endpoint
-		medium                     physical.FullDuplexUnreliablePort
-		out                        chan *outFrame
-		in                         chan *gplayers.Ethernet
-		cancelCtx                  func()
-		sendClosedCh, recvClosedCh chan struct{}
+		conf       *EthernetPortConfig
+		macAddress gopacket.Endpoint
+		medium     physical.FullDuplexUnreliablePort
+		out        chan *outFrame
+		in         chan *gplayers.Ethernet
+		cancelCtx  func()
+		wg         sync.WaitGroup
+		l          logrus.FieldLogger
 	}
 
 	outFrame struct {
@@ -76,11 +79,12 @@ func NewEthernetPort(
 	}
 	macAddress, err := net.ParseMAC(conf.MACAddress)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing MAC address: %w", err)
+		return nil, fmt.Errorf("error parsing mac address: %w", err)
 	}
 	nic := &ethernetPort{
 		conf:       &conf,
 		macAddress: gplayers.NewMACEndpoint(macAddress),
+		l:          logrus.WithField("port_mac_address", conf.MACAddress),
 	}
 	if len(medium) == 1 {
 		nic.medium = medium[0]
@@ -94,23 +98,26 @@ func NewEthernetPort(
 func (e *ethernetPort) startThreads() {
 	var ctx context.Context
 	ctx, e.cancelCtx = context.WithCancel(context.Background())
-	ctxDoneCh := ctx.Done()
+	ctxDone := ctx.Done()
 
 	// send
 	e.out = make(chan *outFrame, MaxQueueSize)
-	e.sendClosedCh = make(chan struct{})
+	e.wg.Add(1)
 	go func() {
-		defer close(e.sendClosedCh)
+		defer e.wg.Done()
 		for {
 			select {
-			case <-ctxDoneCh:
+			case <-ctxDone:
 				return
 			case frame := <-e.out:
 				func() {
+					// here we need new a context that must be cancelled if either ctx
+					// or frame.ctx are done
 					ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, frame.ctx)
 					defer cancel()
-					l := logrus.WithField("frame_buf", frame.buf)
+					l := e.l.WithField("frame_buf", frame.buf)
 
+					// send
 					got, err := e.medium.Send(ctx, frame.buf)
 					if err != nil {
 						l.
@@ -129,9 +136,9 @@ func (e *ethernetPort) startThreads() {
 
 	// recv
 	e.in = make(chan *gplayers.Ethernet, MaxQueueSize)
-	e.recvClosedCh = make(chan struct{})
+	e.wg.Add(1)
 	go func() {
-		defer close(e.recvClosedCh)
+		defer e.wg.Done()
 		for {
 			buf := make([]byte, 2*MTU)
 			n, err := e.medium.Recv(ctx, buf)
@@ -139,7 +146,7 @@ func (e *ethernetPort) startThreads() {
 				if errors.Is(err, context.Canceled) {
 					return
 				}
-				logrus.
+				e.l.
 					WithError(err).
 					Error("error receiving ethernet frame")
 				continue
@@ -159,10 +166,13 @@ func (e *ethernetPort) Send(ctx context.Context, frame *gplayers.Ethernet) error
 	}
 
 	// serialize frame
-	frame.SrcMAC = e.macAddress.Raw()
+	if !e.ForwardingMode() {
+		frame.SrcMAC = e.macAddress.Raw()
+	}
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{}
-	if err := gopacket.SerializeLayers(buf, opts, frame, gopacket.Payload(frame.Payload)); err != nil {
+	payload := gopacket.Payload(frame.Payload)
+	if err := gopacket.SerializeLayers(buf, opts, frame, payload); err != nil {
 		return fmt.Errorf("error serializing ethernet layer")
 	}
 
@@ -183,7 +193,7 @@ func (e *ethernetPort) Recv() <-chan *gplayers.Ethernet {
 }
 
 func (e *ethernetPort) decap(frame []byte) {
-	l := logrus.WithField("frame_buf", frame)
+	l := e.l.WithField("frame_buf", frame)
 
 	var eth *gplayers.Ethernet
 	err := func() error {
@@ -209,11 +219,11 @@ func (e *ethernetPort) decap(frame []byte) {
 		if !isEth {
 			return errors.New("link layer is not ethernet")
 		}
-		if !e.conf.ForwardingMode && e.macAddress != gplayers.NewMACEndpoint(eth.DstMAC) {
+		if !e.ForwardingMode() && e.macAddress != gplayers.NewMACEndpoint(eth.DstMAC) {
 			eth = nil
 			l.
 				WithField("frame", eth).
-				Warn("discarding ethernet frame due to unmatched dst MAC address")
+				Info("discarding ethernet frame due to unmatched dst mac address")
 		}
 
 		return nil
@@ -235,8 +245,7 @@ func (e *ethernetPort) Close() error {
 	// close threads
 	e.cancelCtx()
 	e.cancelCtx = nil
-	<-e.sendClosedCh
-	<-e.recvClosedCh
+	e.wg.Wait()
 
 	// close channels
 	close(e.out)
@@ -249,4 +258,8 @@ func (e *ethernetPort) Close() error {
 
 func (e *ethernetPort) ForwardingMode() bool {
 	return e.conf.ForwardingMode
+}
+
+func (e *ethernetPort) MACAddress() gopacket.Endpoint {
+	return e.macAddress
 }
