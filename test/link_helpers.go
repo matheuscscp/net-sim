@@ -1,4 +1,4 @@
-package link_test
+package test
 
 import (
 	"net"
@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func assertFrame(
+func AssertFrame(
 	t *testing.T,
 	ch <-chan *gplayers.Ethernet,
 	src, dst net.HardwareAddr,
@@ -29,19 +29,20 @@ func assertFrame(
 	opts := gopacket.SerializeOptions{}
 	require.NoError(t, expected.SerializeTo(buf, opts))
 	expected.Contents = gopacket.
-		NewPacket(buf.Bytes(), gplayers.LayerTypeEthernet, gopacket.Default).
+		NewPacket(buf.Bytes(), gplayers.LayerTypeEthernet, gopacket.Lazy).
 		LinkLayer().
 		LayerContents()
-	assert.Equal(t, expected, <-ch)
+	actual := <-ch
+	assert.Equal(t, expected, actual)
 }
 
-func flagErrorForUnexpectedFrames(t *testing.T, ch <-chan *gplayers.Ethernet) {
+func FlagErrorForUnexpectedFrames(t *testing.T, ch <-chan *gplayers.Ethernet) {
 	for eth := range ch {
 		t.Errorf("received more ethernet frames than expected: %+v", eth)
 	}
 }
 
-func mustParseMAC(t *testing.T, s string) net.HardwareAddr {
+func MustParseMAC(t *testing.T, s string) net.HardwareAddr {
 	a, err := net.ParseMAC(s)
 	require.NoError(t, err)
 	return a
