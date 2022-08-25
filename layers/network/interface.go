@@ -35,6 +35,7 @@ type (
 		Close() error
 		ForwardingMode() bool
 		IPAddress() gopacket.Endpoint
+		MACAddress() gopacket.Endpoint
 	}
 
 	// InterfaceConfig contains the configs for the
@@ -169,9 +170,9 @@ func (i *interfaceImpl) Send(ctx context.Context, datagram *gplayers.IPv4) error
 	}
 
 	// serialize datagram
-	datagram.Version = 4
-	datagram.IHL = 5                                     // header length in 4-byte words
-	datagram.Length = uint16(len(datagram.Payload)) + 20 // header length in bytes
+	datagram.Version = Version
+	datagram.IHL = IHL
+	datagram.Length = uint16(len(datagram.Payload)) + HeaderLength
 	if !i.ForwardingMode() {
 		datagram.SrcIP = i.ipAddress.Raw()
 	}
@@ -439,4 +440,8 @@ func (i *interfaceImpl) ForwardingMode() bool {
 
 func (i *interfaceImpl) IPAddress() gopacket.Endpoint {
 	return i.ipAddress
+}
+
+func (i *interfaceImpl) MACAddress() gopacket.Endpoint {
+	return i.card.MACAddress()
 }
