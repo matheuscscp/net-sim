@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/matheuscscp/net-sim/internal/layers/physical"
+	"github.com/matheuscscp/net-sim/layers/physical"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

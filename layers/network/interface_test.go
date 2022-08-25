@@ -5,9 +5,9 @@ import (
 	"net"
 	"testing"
 
-	"github.com/matheuscscp/net-sim/internal/layers/link"
-	"github.com/matheuscscp/net-sim/internal/layers/network"
-	"github.com/matheuscscp/net-sim/internal/layers/physical"
+	"github.com/matheuscscp/net-sim/layers/link"
+	"github.com/matheuscscp/net-sim/layers/network"
+	"github.com/matheuscscp/net-sim/layers/physical"
 	"github.com/matheuscscp/net-sim/test"
 
 	gplayers "github.com/google/gopacket/layers"

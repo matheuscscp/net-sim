@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/matheuscscp/net-sim/internal/layers/common"
-	"github.com/matheuscscp/net-sim/internal/layers/link"
+	"github.com/matheuscscp/net-sim/layers/common"
+	"github.com/matheuscscp/net-sim/layers/link"
 	pkgnet "github.com/matheuscscp/net-sim/pkg/net"
 	pkgtime "github.com/matheuscscp/net-sim/pkg/time"
 
