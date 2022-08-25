@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"testing"
-	"time"
 
 	"github.com/matheuscscp/net-sim/internal/layers/link"
 	"github.com/matheuscscp/net-sim/internal/layers/network"
@@ -141,7 +140,6 @@ func TestLocalAreaNetwork(t *testing.T) {
 		},
 		DstIP: interfaces[2].IPAddress().Raw(),
 	}))
-	time.Sleep(110 * time.Millisecond) // datagram will be delayed waiting for ARP
 	test.AssertDatagram(
 		t,
 		interfaces[2].Recv(),
@@ -159,7 +157,6 @@ func TestLocalAreaNetwork(t *testing.T) {
 		},
 		DstIP: publicIPAddress,
 	}))
-	time.Sleep(110 * time.Millisecond) // datagram will be delayed waiting for ARP
 	test.AssertDatagram(
 		t,
 		interfaces[0].Recv(),
