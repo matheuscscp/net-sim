@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/matheuscscp/net-sim/internal/layers/common"
+	"github.com/matheuscscp/net-sim/layers/common"
 )
 
 type (

@@ -9,8 +9,8 @@ import (
 	"net"
 	"sync"
 
-	"github.com/matheuscscp/net-sim/internal/layers/common"
-	"github.com/matheuscscp/net-sim/internal/layers/physical"
+	"github.com/matheuscscp/net-sim/layers/common"
+	"github.com/matheuscscp/net-sim/layers/physical"
 	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"

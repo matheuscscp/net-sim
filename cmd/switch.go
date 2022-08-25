@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/matheuscscp/net-sim/internal/layers/link"
+	"github.com/matheuscscp/net-sim/layers/link"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
