@@ -122,7 +122,6 @@ func NewInterface(
 		broadcast: gplayers.NewIPEndpoint(pkgnet.BroadcastIPAddress(network)),
 		out:       make(chan *outDatagram, MaxQueueSize),
 		in:        make(chan *gplayers.IPv4, MaxQueueSize),
-		arpTable:  NewARPTable(),
 	}
 	if len(card) == 1 {
 		intf.card = card[0]
@@ -218,7 +217,7 @@ func (i *interfaceImpl) send(o *outDatagram) error {
 	dstMACAddress := link.BroadcastMACEndpoint
 	if o.arpDstIPAddress != i.broadcast {
 		var hasL2Route bool
-		dstMACAddress, hasL2Route = i.arpTable.Load(o.arpDstIPAddress)
+		dstMACAddress, hasL2Route = i.arpTable.FindRoute(o.arpDstIPAddress)
 		if !hasL2Route {
 			return errNoL2Route
 		}
@@ -397,7 +396,7 @@ func (i *interfaceImpl) decapARP(ctx context.Context, frame *gplayers.Ethernet) 
 	}
 
 	// cache mapping
-	i.arpTable.Store(arp.SourceProtAddress, arp.SourceHwAddress)
+	i.arpTable.StoreRoute(arp.SourceProtAddress, arp.SourceHwAddress)
 
 	// reply arp request
 	arpDstIPAddress := gplayers.NewIPEndpoint(arp.DstProtAddress)

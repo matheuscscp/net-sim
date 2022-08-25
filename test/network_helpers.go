@@ -42,3 +42,9 @@ func FlagErrorForUnexpectedDatagrams(t *testing.T, ch <-chan *gplayers.IPv4) {
 		t.Errorf("received more ip datagrams than expected: %+v", ip)
 	}
 }
+
+func MustParseCIDR(t *testing.T, s string) *net.IPNet {
+	_, a, err := net.ParseCIDR(s)
+	require.NoError(t, err)
+	return a
+}
