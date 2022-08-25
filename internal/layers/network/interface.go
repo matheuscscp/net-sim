@@ -119,7 +119,7 @@ func NewInterface(
 		ipAddress: gplayers.NewIPEndpoint(ipAddress),
 		gateway:   gplayers.NewIPEndpoint(gateway),
 		network:   network,
-		broadcast: gplayers.NewIPEndpoint(pkgnet.Broadcast(network)),
+		broadcast: gplayers.NewIPEndpoint(pkgnet.BroadcastIPAddress(network)),
 		out:       make(chan *outDatagram, MaxQueueSize),
 		in:        make(chan *gplayers.IPv4, MaxQueueSize),
 		arpTable:  NewARPTable(),
