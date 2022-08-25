@@ -111,9 +111,9 @@ func (s *switchImpl) run(ctx context.Context) {
 		}
 	}
 
-	portAddressToNumber := make(map[gopacket.Endpoint]int)
-	for i, port := range s.ports {
-		portAddressToNumber[port.MACAddress()] = i
+	portMACAddresses := make(map[gopacket.Endpoint]struct{})
+	for _, port := range s.ports {
+		portMACAddresses[port.MACAddress()] = struct{}{}
 	}
 
 	ctxDone := ctx.Done()
@@ -131,21 +131,18 @@ func (s *switchImpl) run(ctx context.Context) {
 				select {
 				case <-ctxDone:
 					return
-				case eth := <-fromPort.Recv():
+				case frame := <-fromPort.Recv():
 					l := logrus.
 						WithField("from_port", i).
-						WithField("frame", eth)
+						WithField("frame", frame)
 
 					// update forwarding table
-					srcMAC := gplayers.NewMACEndpoint(eth.SrcMAC)
+					srcMAC := gplayers.NewMACEndpoint(frame.SrcMAC)
 					storeRoute(srcMAC, i)
 
-					// check if dst mac address matches the address of one of the ports
-					dstMAC := gplayers.NewMACEndpoint(eth.DstMAC)
-					if j, ok := portAddressToNumber[dstMAC]; ok {
-						l.
-							WithField("matched_port_number", j).
-							Info("frame discarded because dst mac address matches the address of a port")
+					// check if dst mac address matches the mac address of one of the ports
+					dstMAC := gplayers.NewMACEndpoint(frame.DstMAC)
+					if _, isPortMACAddress := portMACAddresses[dstMAC]; isPortMACAddress {
 						continue
 					}
 
@@ -153,7 +150,7 @@ func (s *switchImpl) run(ctx context.Context) {
 					dstPort, hasRoute := forwardingTable.Load(dstMAC)
 					if hasRoute {
 						j := dstPort.(int)
-						if err := s.ports[j].Send(ctx, eth); err != nil {
+						if err := s.ports[j].Send(ctx, frame); err != nil {
 							l.
 								WithError(err).
 								WithField("to_port", j).
@@ -162,7 +159,7 @@ func (s *switchImpl) run(ctx context.Context) {
 					} else { // no route, forward to all other ports
 						for j, toPort := range s.ports {
 							if j != i {
-								if err := toPort.Send(ctx, eth); err != nil {
+								if err := toPort.Send(ctx, frame); err != nil {
 									l.
 										WithError(err).
 										WithField("to_port", j).

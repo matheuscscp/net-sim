@@ -347,8 +347,7 @@ func (i *interfaceImpl) Recv() <-chan *gplayers.IPv4 {
 
 func (i *interfaceImpl) decap(ctx context.Context, frame *gplayers.Ethernet) {
 	l := i.l.
-		WithField("src_mac_address", frame.SrcMAC.String()).
-		WithField("datagram_buf", frame.Payload)
+		WithField("frame", frame)
 
 	var datagram *gplayers.IPv4
 	err := func() error {
@@ -356,20 +355,21 @@ func (i *interfaceImpl) decap(ctx context.Context, frame *gplayers.Ethernet) {
 		case gplayers.EthernetTypeARP:
 			return i.decapARP(ctx, frame)
 		case gplayers.EthernetTypeIPv4:
+			// decap
 			pkt := gopacket.NewPacket(frame.Payload, gplayers.LayerTypeIPv4, gopacket.Lazy)
 			datagram = pkt.NetworkLayer().(*gplayers.IPv4)
 			if datagram == nil || len(datagram.Payload) == 0 {
 				return pkt.ErrorLayer().Error()
 			}
+
+			// check discard
 			dstIPAddress := gplayers.NewIPEndpoint(datagram.DstIP)
 			if dstIPAddress != i.broadcast &&
 				!i.ForwardingMode() &&
 				i.ipAddress != dstIPAddress {
-				l.
-					WithField("datagram", datagram).
-					Info("discarding ip datagram due to unmatched dst ip address")
 				datagram = nil
 			}
+
 			return nil
 		default:
 			l.Info("ethertype not implemented. dropping")

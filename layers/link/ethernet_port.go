@@ -119,8 +119,7 @@ func (e *ethernetPort) startThreads() {
 					ctx, cancel := pkgcontext.WithCancelOnAnotherContext(frame.ctx, ctx)
 					defer cancel()
 					l := e.l.
-						WithField("dst_mac_address", frame.dstMACAddress.String()).
-						WithField("frame_buf", frame.buf)
+						WithField("frame", frame)
 
 					// send
 					got, err := e.medium.Send(ctx, frame.buf)
@@ -197,8 +196,6 @@ func (e *ethernetPort) Recv() <-chan *gplayers.Ethernet {
 }
 
 func (e *ethernetPort) decap(frameBuf []byte) {
-	l := e.l.WithField("frame_buf", frameBuf)
-
 	var frame *gplayers.Ethernet
 	err := func() error {
 		// split frame data and crc
@@ -221,13 +218,12 @@ func (e *ethernetPort) decap(frameBuf []byte) {
 		if frame == nil || len(frame.Payload) == 0 {
 			return pkt.ErrorLayer().Error()
 		}
+
+		// check discard
 		dstMACAddress := gplayers.NewMACEndpoint(frame.DstMAC)
 		if dstMACAddress != BroadcastMACEndpoint &&
 			!e.ForwardingMode() &&
 			e.macAddress != dstMACAddress {
-			l.
-				WithField("frame", frame).
-				Info("discarding ethernet frame due to unmatched dst mac address")
 			frame = nil
 		}
 
@@ -235,8 +231,9 @@ func (e *ethernetPort) decap(frameBuf []byte) {
 	}()
 
 	if err != nil {
-		l.
+		e.l.
 			WithError(err).
+			WithField("frame_buf", frameBuf).
 			Error("error decapsulating link layer")
 		return
 	}

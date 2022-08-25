@@ -37,8 +37,8 @@ func AssertFrame(
 }
 
 func FlagErrorForUnexpectedFrames(t *testing.T, ch <-chan *gplayers.Ethernet) {
-	for eth := range ch {
-		t.Errorf("received more ethernet frames than expected: %+v", eth)
+	for frame := range ch {
+		t.Errorf("received more ethernet frames than expected: %+v", frame)
 	}
 }
 
