@@ -10,10 +10,10 @@ import (
 // bits in the network IP address.
 //
 // Example: 1.1.1.0/24 => 1.1.1.255
-func BroadcastIPAddress(ipnet *net.IPNet) net.IP {
-	b := make(net.IP, len(ipnet.IP))
+func BroadcastIPAddress(network *net.IPNet) net.IP {
+	b := make(net.IP, len(network.IP))
 	for i := range b {
-		b[i] = ipnet.IP[i] | (^ipnet.Mask[i])
+		b[i] = network.IP[i] | (^network.Mask[i])
 	}
 	return b
 }

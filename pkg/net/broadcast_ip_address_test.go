@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	pkgnet "github.com/matheuscscp/net-sim/pkg/net"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
