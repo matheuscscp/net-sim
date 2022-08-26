@@ -35,11 +35,11 @@ type (
 	// EthernetPortConfig contains the configs for the
 	// concrete implementation of EthernetPort.
 	EthernetPortConfig struct {
-		// ForwardingMode keeps inbound frames with wrong dst address.
+		// ForwardingMode keeps inbound frames with wrong dst MAC address.
 		ForwardingMode bool   `yaml:"forwardingMode"`
 		MACAddress     string `yaml:"macAddress"`
 
-		Medium *physical.FullDuplexUnreliablePortConfig `yaml:"fullDuplexUnreliablePort"`
+		Medium physical.FullDuplexUnreliablePortConfig `yaml:"fullDuplexUnreliablePort"`
 	}
 
 	ethernetPort struct {
@@ -61,39 +61,22 @@ type (
 )
 
 // NewEthernetPort creates an EthernetPort from config.
-// If conf.Medium is nil, then a medium must be passed.
-func NewEthernetPort(
-	ctx context.Context,
-	conf EthernetPortConfig,
-	medium ...physical.FullDuplexUnreliablePort,
-) (EthernetPort, error) {
-	if len(medium) > 0 && conf.Medium != nil {
-		return nil, errors.New("specify one of medium or conf.Medium, not both")
-	}
-	if len(medium) == 0 && conf.Medium == nil {
-		return nil, errors.New("specify one of medium or conf.Medium")
-	}
-	if len(medium) > 1 {
-		return nil, errors.New("can only handle one medium")
-	}
-	if len(medium) == 1 && medium[0] == nil {
-		return nil, errors.New("nil medium")
-	}
+func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort, error) {
 	macAddress, err := net.ParseMAC(conf.MACAddress)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing mac address: %w", err)
 	}
+	medium, err := physical.NewFullDuplexUnreliablePort(ctx, conf.Medium)
+	if err != nil {
+		return nil, fmt.Errorf("error creating medium: %w", err)
+	}
 	nic := &ethernetPort{
 		conf:       &conf,
-		l:          logrus.WithField("port_mac_address", conf.MACAddress),
+		l:          logrus.WithField("port_mac_address", macAddress.String()),
 		macAddress: gplayers.NewMACEndpoint(macAddress),
+		medium:     medium,
 		out:        make(chan *outFrame, MaxQueueSize),
 		in:         make(chan *gplayers.Ethernet, MaxQueueSize),
-	}
-	if len(medium) == 1 {
-		nic.medium = medium[0]
-	} else if nic.medium, err = physical.NewFullDuplexUnreliablePort(ctx, *conf.Medium); err != nil {
-		return nil, fmt.Errorf("error creating medium: %w", err)
 	}
 	nic.startThreads()
 	return nic, nil
@@ -212,16 +195,16 @@ func (e *ethernetPort) decap(frameBuf []byte) {
 			return fmt.Errorf("crc32.Castagnoli integrity check failed, want %x, got %x", expectedCrc, crc)
 		}
 
-		// decap
+		// deserialize frame
 		pkt := gopacket.NewPacket(frameData, gplayers.LayerTypeEthernet, gopacket.Lazy)
 		frame = pkt.LinkLayer().(*gplayers.Ethernet)
 		if frame == nil || len(frame.Payload) == 0 {
-			return pkt.ErrorLayer().Error()
+			return fmt.Errorf("error deserializing link layer: %w", pkt.ErrorLayer().Error())
 		}
 
 		// check discard
 		dstMACAddress := gplayers.NewMACEndpoint(frame.DstMAC)
-		if dstMACAddress != BroadcastMACEndpoint &&
+		if dstMACAddress != BroadcastMACEndpoint() &&
 			!e.ForwardingMode() &&
 			e.macAddress != dstMACAddress {
 			frame = nil

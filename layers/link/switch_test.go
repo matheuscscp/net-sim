@@ -3,37 +3,35 @@ package link_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/matheuscscp/net-sim/layers/link"
 	"github.com/matheuscscp/net-sim/layers/physical"
 	"github.com/matheuscscp/net-sim/test"
 
 	gplayers "github.com/google/gopacket/layers"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 var (
 	switchConfig = link.SwitchConfig{
-		Ports: []*link.EthernetPortConfig{
+		Ports: []link.EthernetPortConfig{
 			{
 				MACAddress: "00:00:5e:00:53:aa",
-				Medium: &physical.FullDuplexUnreliablePortConfig{
+				Medium: physical.FullDuplexUnreliablePortConfig{
 					RecvUDPEndpoint: ":50001",
 					SendUDPEndpoint: ":50101",
 				},
 			},
 			{
 				MACAddress: "00:00:5e:00:53:ab",
-				Medium: &physical.FullDuplexUnreliablePortConfig{
+				Medium: physical.FullDuplexUnreliablePortConfig{
 					RecvUDPEndpoint: ":50002",
 					SendUDPEndpoint: ":50102",
 				},
 			},
 			{
 				MACAddress: "00:00:5e:00:53:ac",
-				Medium: &physical.FullDuplexUnreliablePortConfig{
+				Medium: physical.FullDuplexUnreliablePortConfig{
 					RecvUDPEndpoint: ":50003",
 					SendUDPEndpoint: ":50103",
 				},
@@ -44,21 +42,21 @@ var (
 	switchPeersConfig = []*link.EthernetPortConfig{
 		{
 			MACAddress: "00:00:5e:01:53:aa",
-			Medium: &physical.FullDuplexUnreliablePortConfig{
+			Medium: physical.FullDuplexUnreliablePortConfig{
 				RecvUDPEndpoint: ":50101",
 				SendUDPEndpoint: ":50001",
 			},
 		},
 		{
 			MACAddress: "00:00:5e:01:53:ab",
-			Medium: &physical.FullDuplexUnreliablePortConfig{
+			Medium: physical.FullDuplexUnreliablePortConfig{
 				RecvUDPEndpoint: ":50102",
 				SendUDPEndpoint: ":50002",
 			},
 		},
 		{
 			MACAddress: "00:00:5e:01:53:ac",
-			Medium: &physical.FullDuplexUnreliablePortConfig{
+			Medium: physical.FullDuplexUnreliablePortConfig{
 				RecvUDPEndpoint: ":50103",
 				SendUDPEndpoint: ":50003",
 			},
@@ -68,33 +66,20 @@ var (
 
 func TestSwitch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	var waitClose func()
-	switchPorts := make([]link.EthernetPort, len(switchConfig.Ports))
+	var waitClose link.SwitchWaitCloseFunc
 	switchPeers := make([]link.EthernetPort, len(switchPeersConfig))
 
 	defer func() {
 		cancel()
-		waitClose()
-		for _, port := range switchPorts {
-			// the switch closes the ports
-			test.FlagErrorForUnexpectedFrames(t, port.Recv())
-		}
-		for _, port := range switchPeers {
-			assert.NoError(t, port.Close())
-			test.FlagErrorForUnexpectedFrames(t, port.Recv())
-		}
+		waitClose(func(portBuffer <-chan *gplayers.Ethernet) {
+			test.FlagErrorForUnexpectedFrames(t, portBuffer)
+		})
+		test.CloseEthPortsAndFlagErrorForUnexpectedData(t, switchPeers...)
 	}()
 
-	// start switch ports and switch
-	for i, portConf := range switchConfig.Ports {
-		portConf := *portConf
-		portConf.ForwardingMode = true
-		port, err := link.NewEthernetPort(ctx, portConf)
-		require.NoError(t, err)
-		switchPorts[i] = port
-	}
+	// start switch
 	var err error
-	waitClose, err = link.RunSwitch(ctx, link.SwitchConfig{}, switchPorts...)
+	waitClose, err = link.RunSwitch(ctx, switchConfig)
 	require.NoError(t, err)
 	require.NotNil(t, waitClose)
 
@@ -149,16 +134,34 @@ func TestSwitch(t *testing.T) {
 		helloPayload,
 	)
 
-	// frames with dst mac address matching one of the switch's ports
-	// are discarded
+	// frames with dst MAC address matching one of the switch's ports
+	// are discarded. here we prove that the frame is discarded by
+	// sending another frame right after the discarded one which will
+	// not be discarded and compare the payload
+	helloDiscardedPayload := []byte("hello world discarded")
 	require.NoError(t, switchPeers[0].Send(ctx, &gplayers.Ethernet{
+		BaseLayer: gplayers.BaseLayer{
+			Payload: helloDiscardedPayload,
+		},
+		SrcMAC:       switchPeers[0].MACAddress().Raw(), // forwarding mode doesnt set src MAC
+		DstMAC:       test.MustParseMAC(t, switchConfig.Ports[1].MACAddress),
+		EthernetType: gplayers.EthernetTypeLLC,
+		Length:       uint16(len(helloDiscardedPayload)),
+	}))
+	require.NoError(t, switchPeers[1].Send(ctx, &gplayers.Ethernet{
 		BaseLayer: gplayers.BaseLayer{
 			Payload: helloPayload,
 		},
-		SrcMAC:       switchPeers[0].MACAddress().Raw(), // forwarding mode doesnt set src mac
-		DstMAC:       test.MustParseMAC(t, switchConfig.Ports[1].MACAddress),
+		SrcMAC:       switchPeers[0].MACAddress().Raw(), // forwarding mode doesnt set src MAC
+		DstMAC:       switchPeers[1].MACAddress().Raw(),
 		EthernetType: gplayers.EthernetTypeLLC,
 		Length:       uint16(len(helloPayload)),
 	}))
-	time.Sleep(100 * time.Millisecond) // give time for frame to arrive and be discarded
+	test.AssertFrame(
+		t,
+		switchPeers[1].Recv(),
+		switchPeers[0].MACAddress().Raw(), // src
+		switchPeers[1].MACAddress().Raw(), // dst
+		helloPayload,
+	)
 }

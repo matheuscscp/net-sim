@@ -14,21 +14,18 @@ import (
 func TestForwardingTable(t *testing.T) {
 	t.Parallel()
 
-	table, err := network.NewForwardingTable(network.ForwardingTableConfig{
-		DefaultRoute: network.RouteConfig{Interface: "eth0"},
-		Routes: []network.RouteConfig{
-			{
-				NetworkCIDR: "1.1.0.0/16",
-				Interface:   "eth1",
-			},
-			{
-				NetworkCIDR: "1.1.1.0/24",
-				Interface:   "eth2",
-			},
-			{
-				NetworkCIDR: "1.1.2.0/24",
-				Interface:   "eth3",
-			},
+	table, err := network.NewForwardingTable([]network.RouteConfig{
+		{
+			NetworkCIDR: "1.1.0.0/16",
+			Interface:   "eth1",
+		},
+		{
+			NetworkCIDR: "1.1.1.0/24",
+			Interface:   "eth2",
+		},
+		{
+			NetworkCIDR: "1.1.2.0/24",
+			Interface:   "eth3",
 		},
 	})
 	require.NoError(t, err)
@@ -37,39 +34,38 @@ func TestForwardingTable(t *testing.T) {
 	for name, tt := range map[string]*struct {
 		ipv4 string
 		intf string
+		ok   bool
 	}{
-		"default-route": {
+		"missing-route": {
 			ipv4: "1.123.1.1",
-			intf: "eth0",
+			intf: "",
+			ok:   false,
 		},
 		"wide-route": {
 			ipv4: "1.1.123.1",
 			intf: "eth1",
+			ok:   true,
 		},
 		"specific-route-1": {
 			ipv4: "1.1.1.1",
 			intf: "eth2",
+			ok:   true,
 		},
 		"specific-route-2": {
 			ipv4: "1.1.2.1",
 			intf: "eth3",
+			ok:   true,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tt := tt // copy for running in parallel
 			t.Parallel()
 
-			assert.Equal(t, tt.intf, table.FindRoute(net.ParseIP(tt.ipv4)))
+			intf, ok := table.FindRoute(net.ParseIP(tt.ipv4))
+			assert.Equal(t, tt.intf, intf)
+			assert.Equal(t, tt.ok, ok)
 		})
 	}
-}
-
-func TestForwardingTableSetDefaultRoute(t *testing.T) {
-	t.Parallel()
-
-	table := &network.ForwardingTable{}
-	table.SetDefaultRoute("eth0")
-	assert.Equal(t, "eth0", table.FindRoute(net.ParseIP("1.1.1.1")))
 }
 
 func TestForwardingTableStoreRoute(t *testing.T) {
@@ -77,25 +73,29 @@ func TestForwardingTableStoreRoute(t *testing.T) {
 
 	table := &network.ForwardingTable{}
 
-	err := table.StoreRoute(test.MustParseCIDR(t, "1.1.1.0/24"), "eth0")
-	require.NoError(t, err)
-	assert.Equal(t, "eth0", table.FindRoute(net.ParseIP("1.1.1.1")))
+	table.StoreRoute(test.MustParseCIDR(t, "1.1.1.0/24"), "eth0")
+	intf, ok := table.FindRoute(net.ParseIP("1.1.1.1"))
+	assert.Equal(t, "eth0", intf)
+	assert.True(t, ok)
 
-	err = table.StoreRoute(test.MustParseCIDR(t, "1.1.1.0/24"), "eth1")
-	require.NoError(t, err)
-	assert.Equal(t, "eth1", table.FindRoute(net.ParseIP("1.1.1.1")))
+	table.StoreRoute(test.MustParseCIDR(t, "1.1.1.0/24"), "eth1")
+	intf, ok = table.FindRoute(net.ParseIP("1.1.1.1"))
+	assert.Equal(t, "eth1", intf)
+	assert.True(t, ok)
 }
 
 func TestForwardingTableDeleteRoute(t *testing.T) {
 	t.Parallel()
 
 	table := &network.ForwardingTable{}
-	table.SetDefaultRoute("eth0")
 
-	err := table.StoreRoute(test.MustParseCIDR(t, "1.1.1.0/24"), "eth1")
-	require.NoError(t, err)
-	assert.Equal(t, "eth1", table.FindRoute(net.ParseIP("1.1.1.1")))
+	table.StoreRoute(test.MustParseCIDR(t, "1.1.1.0/24"), "eth1")
+	intf, ok := table.FindRoute(net.ParseIP("1.1.1.1"))
+	assert.Equal(t, "eth1", intf)
+	assert.True(t, ok)
 
 	table.DeleteRoute(test.MustParseCIDR(t, "1.1.1.0/24"))
-	assert.Equal(t, "eth0", table.FindRoute(net.ParseIP("1.1.1.1")))
+	intf, ok = table.FindRoute(net.ParseIP("1.1.1.1"))
+	assert.Equal(t, "", intf)
+	assert.False(t, ok)
 }

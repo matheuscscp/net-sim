@@ -34,20 +34,25 @@ type (
 		Recv() <-chan *gplayers.IPv4
 		Close() error
 		ForwardingMode() bool
+		Name() string
 		IPAddress() gopacket.Endpoint
-		MACAddress() gopacket.Endpoint
+		Gateway() gopacket.Endpoint
+		Network() *net.IPNet
+		BroadcastIPAddress() gopacket.Endpoint
+		Card() link.EthernetPort
 	}
 
 	// InterfaceConfig contains the configs for the
 	// concrete implementation of Interface.
 	InterfaceConfig struct {
-		// ForwardingMode keeps inbound datagrams with wrong dst address.
+		// ForwardingMode keeps inbound datagrams with wrong dst IP address.
 		ForwardingMode bool   `yaml:"forwardingMode"`
+		Name           string `yaml:"name"`
 		IPAddress      string `yaml:"ipAddress"`
 		Gateway        string `yaml:"gateway"`
 		NetworkCIDR    string `yaml:"networkCIDR"`
 
-		Card *link.EthernetPortConfig `yaml:"ethernetPort"`
+		Card link.EthernetPortConfig `yaml:"ethernetPort"`
 	}
 
 	interfaceImpl struct {
@@ -57,10 +62,11 @@ type (
 		gateway   gopacket.Endpoint
 		network   *net.IPNet
 		broadcast gopacket.Endpoint
+		card      link.EthernetPort
 		out       chan *outDatagram // delayed datagrams waiting for ARP
 		in        chan *gplayers.IPv4
+		arpEvents chan *gopacket.Endpoint
 		arpTable  ARPTable
-		card      link.EthernetPort
 		cancelCtx func()
 		wg        sync.WaitGroup
 	}
@@ -78,23 +84,9 @@ var (
 )
 
 // NewInterface creates an Interface from config.
-// If conf.Card is nil, then a card must be passed.
-func NewInterface(
-	ctx context.Context,
-	conf InterfaceConfig,
-	card ...link.EthernetPort,
-) (Interface, error) {
-	if len(card) > 0 && conf.Card != nil {
-		return nil, errors.New("specify one of card or conf.Card, not both")
-	}
-	if len(card) == 0 && conf.Card == nil {
-		return nil, errors.New("specify one of card or conf.Card")
-	}
-	if len(card) > 1 {
-		return nil, errors.New("can only handle one card")
-	}
-	if len(card) == 1 && card[0] == nil {
-		return nil, errors.New("nil card")
+func NewInterface(ctx context.Context, conf InterfaceConfig) (Interface, error) {
+	if conf.Name == "" {
+		return nil, errors.New("interface name cannot be empty")
 	}
 	ipAddress := net.ParseIP(conf.IPAddress)
 	if ipAddress == nil { // net.ParseID() does not return an error
@@ -114,6 +106,10 @@ func NewInterface(
 	if !network.Contains(gateway) {
 		return nil, errors.New("the gateway ip address does not match the network cidr")
 	}
+	card, err := link.NewEthernetPort(ctx, conf.Card)
+	if err != nil {
+		return nil, fmt.Errorf("error creating card: %w", err)
+	}
 	intf := &interfaceImpl{
 		conf:      &conf,
 		l:         logrus.WithField("interface_ip_address", conf.IPAddress),
@@ -121,13 +117,10 @@ func NewInterface(
 		gateway:   gplayers.NewIPEndpoint(gateway),
 		network:   network,
 		broadcast: gplayers.NewIPEndpoint(pkgnet.BroadcastIPAddress(network)),
+		card:      card,
 		out:       make(chan *outDatagram, MaxQueueSize),
 		in:        make(chan *gplayers.IPv4, MaxQueueSize),
-	}
-	if len(card) == 1 {
-		intf.card = card[0]
-	} else if intf.card, err = link.NewEthernetPort(ctx, *conf.Card); err != nil {
-		return nil, fmt.Errorf("error creating card: %w", err)
+		arpEvents: make(chan *gopacket.Endpoint, MaxQueueSize),
 	}
 	intf.startThreads()
 	return intf, nil
@@ -161,26 +154,18 @@ func (i *interfaceImpl) startThreads() {
 }
 
 func (i *interfaceImpl) Send(ctx context.Context, datagram *gplayers.IPv4) error {
-	// validate payload size
-	if len(datagram.Payload) == 0 {
-		return common.ErrCannotSendEmpty
+	// validate and set fields
+	if err := ValidateDatagramAndSetDefaultFields(datagram); err != nil {
+		return err
 	}
-	if len(datagram.Payload) > MTU {
-		return fmt.Errorf("payload is larger than network layer MTU (%d)", MTU)
-	}
-
-	// serialize datagram
-	datagram.Version = Version
-	datagram.IHL = IHL
-	datagram.Length = uint16(len(datagram.Payload)) + HeaderLength
 	if !i.ForwardingMode() {
 		datagram.SrcIP = i.ipAddress.Raw()
 	}
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{}
-	payload := gopacket.Payload(datagram.Payload)
-	if err := gopacket.SerializeLayers(buf, opts, datagram, payload); err != nil {
-		return fmt.Errorf("error serializing network layer: %w", err)
+
+	// serialize datagram
+	buf, err := SerializeDatagram(datagram)
+	if err != nil {
+		return err
 	}
 
 	// calculate L2 endpoint
@@ -191,9 +176,8 @@ func (i *interfaceImpl) Send(ctx context.Context, datagram *gplayers.IPv4) error
 	}
 
 	// send
-	outDatagram := &outDatagram{ctx, buf.Bytes(), dstIPAddress, arpDstIPAddress}
-	err := i.send(outDatagram)
-	if err == nil {
+	outDatagram := &outDatagram{ctx, buf, dstIPAddress, arpDstIPAddress}
+	if err = i.send(outDatagram); err == nil {
 		return nil
 	}
 	if !errors.Is(err, errNoL2Route) {
@@ -201,32 +185,34 @@ func (i *interfaceImpl) Send(ctx context.Context, datagram *gplayers.IPv4) error
 	}
 
 	// no dstMACAddress cached for dstIPAddress, send arp request
+	i.out <- outDatagram // enqueue delayed transmission
 	err = i.sendARP(ctx, &gplayers.ARP{
 		Operation:      gplayers.ARPRequest,
 		DstProtAddress: arpDstIPAddress.Raw(),
-		DstHwAddress:   link.BroadcastMACAddress,
+		DstHwAddress:   link.BroadcastMACAddress(),
 	})
 	if err != nil {
 		return fmt.Errorf("error sending arp request: %w", err)
 	}
-	i.out <- outDatagram // enqueue delayed transmission
 
 	return nil
 }
 
-func (i *interfaceImpl) send(o *outDatagram) error {
-	dstMACAddress := link.BroadcastMACEndpoint
-	if o.arpDstIPAddress != i.broadcast {
+func (i *interfaceImpl) send(datagram *outDatagram) error {
+	// find L2 route
+	dstMACAddress := link.BroadcastMACEndpoint()
+	if datagram.arpDstIPAddress != i.broadcast {
 		var hasL2Route bool
-		dstMACAddress, hasL2Route = i.arpTable.FindRoute(o.arpDstIPAddress)
+		dstMACAddress, hasL2Route = i.arpTable.FindRoute(datagram.arpDstIPAddress)
 		if !hasL2Route {
 			return errNoL2Route
 		}
 	}
 
-	err := i.card.Send(o.ctx, &gplayers.Ethernet{
+	// send
+	err := i.card.Send(datagram.ctx, &gplayers.Ethernet{
 		BaseLayer: gplayers.BaseLayer{
-			Payload: o.buf,
+			Payload: datagram.buf,
 		},
 		DstMAC:       dstMACAddress.Raw(),
 		EthernetType: gplayers.EthernetTypeIPv4,
@@ -236,6 +222,17 @@ func (i *interfaceImpl) send(o *outDatagram) error {
 	}
 
 	return nil
+}
+
+func (i *interfaceImpl) sendOrLogError(datagram *outDatagram) {
+	if err := i.send(datagram); err != nil {
+		i.l.
+			WithError(err).
+			WithField("dst_ip_address", datagram.dstIPAddress.String()).
+			WithField("arp_dst_ip_address", datagram.arpDstIPAddress.String()).
+			WithField("datagram_buf", datagram.buf).
+			Error("error sending arp-delayed ip datagram")
+	}
 }
 
 func (i *interfaceImpl) sendARP(ctx context.Context, arp *gplayers.ARP) error {
@@ -270,44 +267,72 @@ func (i *interfaceImpl) sendARP(ctx context.Context, arp *gplayers.ARP) error {
 }
 
 func (i *interfaceImpl) sendDelayedDatagramsWaitingforARP(ctx context.Context) {
-	// the queue stores an outDatagram and a deadline, which is set
-	// for a small amount of time in the future when the outDatagram
-	// arrives in the thread's channel
-	type queueElem struct {
-		datagram *outDatagram
-		deadline time.Time
+	// we index the ARP dst IP address to store the *outDatagram
+	// in a set. this is so we can transmit batches of waiting
+	// datagrams right away when the relevant ARP reply arrives
+	// and updates the ARP table with the required ARP dst MAC
+	// address
+	type arpDstIPAddressDescriptor struct {
+		pendingDatagrams map[*outDatagram]struct{}
+		deadline         time.Time
 	}
-	var queue []*queueElem
-	push := func(datagram *outDatagram) {
-		queue = append(queue, &queueElem{
-			datagram: datagram,
-			deadline: time.Now().Add(100 * time.Millisecond),
-		})
-	}
-	pop := func() (*outDatagram, bool) {
-		if len(queue) == 0 {
-			return nil, false
+	pendingDatagramsByARPDstIPAddress := make(map[gopacket.Endpoint]*arpDstIPAddressDescriptor)
+	index := func(datagram *outDatagram) {
+		a, ok := pendingDatagramsByARPDstIPAddress[datagram.arpDstIPAddress]
+		if !ok {
+			a = &arpDstIPAddressDescriptor{pendingDatagrams: make(map[*outDatagram]struct{})}
 		}
-		datagram := queue[0].datagram
-		queue[0] = nil
-		queue = queue[1:]
-		if len(queue) == 0 {
-			queue = nil
-		}
-		return datagram, true
+		a.pendingDatagrams[datagram] = struct{}{}
+		a.deadline = time.Now().Add(100 * time.Millisecond)
+		pendingDatagramsByARPDstIPAddress[datagram.arpDstIPAddress] = a
 	}
 
-	// the timer is used to wake up the thread whenever is time to send
-	// the next outDatagram (the head of the queue)
-	timer, stopTimer := pkgtime.NewTimer(time.Hour)
+	// the queue stores an ARP dst IP address whenever a datagram
+	// is delayed because the required ARP entry is missing
+	var queue []*gopacket.Endpoint
+	push := func(arpDstIPAddress *gopacket.Endpoint) {
+		queue = append(queue, arpDstIPAddress)
+	}
+	pop := func() (*gopacket.Endpoint, bool) {
+		for i, arpDstIPAddress := range queue {
+			a, ok := pendingDatagramsByARPDstIPAddress[*arpDstIPAddress]
+			if ok && a.deadline.Before(time.Now()) {
+				queue = queue[i+1:]
+				if len(queue) == 0 {
+					queue = nil
+				}
+				return arpDstIPAddress, true
+			}
+		}
+		queue = nil
+		return nil, false
+	}
+
+	// the timer is used to wake up the thread whenever there are pending
+	// datagram batches
+	timer, stopTimer := pkgtime.NewTimer(0)
 	defer stopTimer()
 	resetTimer := func() {
 		stopTimer()
-		d := time.Hour
-		if len(queue) > 0 {
-			d = time.Until(queue[0].deadline)
+		for i, arpDstIPAddress := range queue {
+			a, ok := pendingDatagramsByARPDstIPAddress[*arpDstIPAddress]
+			if ok {
+				queue = queue[i:]
+				timer.Reset(time.Until(a.deadline))
+				return
+			}
 		}
-		timer.Reset(d)
+		queue = nil
+	}
+
+	flush := func(arpDstIPAddress *gopacket.Endpoint) {
+		a, ok := pendingDatagramsByARPDstIPAddress[*arpDstIPAddress]
+		if ok {
+			for datagram := range a.pendingDatagrams {
+				i.sendOrLogError(datagram)
+			}
+		}
+		delete(pendingDatagramsByARPDstIPAddress, *arpDstIPAddress)
 	}
 
 	ctxDone := ctx.Done()
@@ -316,25 +341,15 @@ func (i *interfaceImpl) sendDelayedDatagramsWaitingforARP(ctx context.Context) {
 		case <-ctxDone:
 			return
 		case datagram := <-i.out:
-			push(datagram)
+			index(datagram)
+			push(&datagram.arpDstIPAddress)
+			resetTimer()
+		case arpDstIPAddress := <-i.arpEvents:
+			flush(arpDstIPAddress)
 			resetTimer()
 		case <-timer.C:
-			if datagram, ok := pop(); ok {
-				// send first datagram in the queue. here we dont need
-				// to merge the cancellation of the thread's ctx into
-				// datagram.ctx because the cancellation of this thread's
-				// ctx is tied with the cancellation of the underlying
-				// port's thread ctx via Close(), and the latter is
-				// already merged with the ctx arg passed to Send()
-				// upon transmission
-				if err := i.send(datagram); err != nil {
-					i.l.
-						WithError(err).
-						WithField("dst_ip_address", datagram.dstIPAddress.String()).
-						WithField("arp_dst_ip_address", datagram.arpDstIPAddress.String()).
-						WithField("datagram_buf", datagram.buf).
-						Error("error sending arp-delayed ip datagram")
-				}
+			if arpDstIPAddress, ok := pop(); ok {
+				flush(arpDstIPAddress)
 			}
 			resetTimer()
 		}
@@ -355,11 +370,11 @@ func (i *interfaceImpl) decap(ctx context.Context, frame *gplayers.Ethernet) {
 		case gplayers.EthernetTypeARP:
 			return i.decapARP(ctx, frame)
 		case gplayers.EthernetTypeIPv4:
-			// decap
-			pkt := gopacket.NewPacket(frame.Payload, gplayers.LayerTypeIPv4, gopacket.Lazy)
-			datagram = pkt.NetworkLayer().(*gplayers.IPv4)
-			if datagram == nil || len(datagram.Payload) == 0 {
-				return pkt.ErrorLayer().Error()
+			// deserialize datagram
+			var err error
+			datagram, err = DeserializeDatagram(frame.Payload)
+			if err != nil {
+				return err
 			}
 
 			// check discard
@@ -372,7 +387,7 @@ func (i *interfaceImpl) decap(ctx context.Context, frame *gplayers.Ethernet) {
 
 			return nil
 		default:
-			l.Info("ethertype not implemented. dropping")
+			l.Info("ethertype not implemented. discarding")
 			return nil
 		}
 	}()
@@ -390,14 +405,17 @@ func (i *interfaceImpl) decap(ctx context.Context, frame *gplayers.Ethernet) {
 }
 
 func (i *interfaceImpl) decapARP(ctx context.Context, frame *gplayers.Ethernet) error {
+	// deserialize arp
 	pkt := gopacket.NewPacket(frame.Payload, gplayers.LayerTypeARP, gopacket.Lazy)
 	arp := pkt.Layer(gplayers.LayerTypeARP).(*gplayers.ARP)
 	if arp == nil || len(arp.Payload) == 0 {
-		return pkt.ErrorLayer().Error()
+		return fmt.Errorf("error deserializing arp packet: %w", pkt.ErrorLayer().Error())
 	}
 
-	// cache mapping
+	// cache mapping and notify
 	i.arpTable.StoreRoute(arp.SourceProtAddress, arp.SourceHwAddress)
+	arpEvent := gplayers.NewIPEndpoint(arp.SourceProtAddress)
+	i.arpEvents <- &arpEvent
 
 	// reply arp request
 	arpDstIPAddress := gplayers.NewIPEndpoint(arp.DstProtAddress)
@@ -430,6 +448,9 @@ func (i *interfaceImpl) Close() error {
 	for range i.out {
 	}
 	close(i.in)
+	close(i.arpEvents)
+	for range i.arpEvents {
+	}
 
 	return i.card.Close()
 }
@@ -438,10 +459,62 @@ func (i *interfaceImpl) ForwardingMode() bool {
 	return i.conf.ForwardingMode
 }
 
+func (i *interfaceImpl) Name() string {
+	return i.conf.Name
+}
+
 func (i *interfaceImpl) IPAddress() gopacket.Endpoint {
 	return i.ipAddress
 }
 
-func (i *interfaceImpl) MACAddress() gopacket.Endpoint {
-	return i.card.MACAddress()
+func (i *interfaceImpl) Gateway() gopacket.Endpoint {
+	return i.gateway
+}
+
+func (i *interfaceImpl) Network() *net.IPNet {
+	return i.network
+}
+
+func (i *interfaceImpl) BroadcastIPAddress() gopacket.Endpoint {
+	return i.broadcast
+}
+
+func (i *interfaceImpl) Card() link.EthernetPort {
+	return i.card
+}
+
+func ValidateDatagramAndSetDefaultFields(datagram *gplayers.IPv4) error {
+	// validate payload size
+	if len(datagram.Payload) == 0 {
+		return common.ErrCannotSendEmpty
+	}
+	if len(datagram.Payload) > MTU {
+		return fmt.Errorf("payload is larger than network layer MTU (%d)", MTU)
+	}
+
+	// set fixed fields
+	datagram.Version = Version
+	datagram.IHL = IHL
+	datagram.Length = uint16(len(datagram.Payload)) + HeaderLength
+
+	return nil
+}
+
+func SerializeDatagram(datagram *gplayers.IPv4) ([]byte, error) {
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{}
+	payload := gopacket.Payload(datagram.Payload)
+	if err := gopacket.SerializeLayers(buf, opts, datagram, payload); err != nil {
+		return nil, fmt.Errorf("error serializing network layer: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+func DeserializeDatagram(buf []byte) (*gplayers.IPv4, error) {
+	pkt := gopacket.NewPacket(buf, gplayers.LayerTypeIPv4, gopacket.Lazy)
+	datagram := pkt.NetworkLayer().(*gplayers.IPv4)
+	if datagram == nil || len(datagram.Payload) == 0 {
+		return nil, fmt.Errorf("error deserializing network layer: %w", pkt.ErrorLayer().Error())
+	}
+	return datagram, nil
 }

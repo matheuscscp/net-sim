@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matheuscscp/net-sim/layers/link"
+
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/stretchr/testify/assert"
@@ -51,6 +53,16 @@ func AssertFrame(
 func FlagErrorForUnexpectedFrames(t *testing.T, ch <-chan *gplayers.Ethernet) {
 	for frame := range ch {
 		t.Errorf("received more ethernet frames than expected: %+v", frame)
+	}
+}
+
+func CloseEthPortsAndFlagErrorForUnexpectedData(t *testing.T, cards ...link.EthernetPort) {
+	for _, card := range cards {
+		if card == nil {
+			continue
+		}
+		assert.NoError(t, card.Close())
+		FlagErrorForUnexpectedFrames(t, card.Recv())
 	}
 }
 
