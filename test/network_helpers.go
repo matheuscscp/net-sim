@@ -3,8 +3,11 @@ package test
 import (
 	"context"
 	"net"
+	"runtime/debug"
 	"testing"
 	"time"
+
+	"github.com/matheuscscp/net-sim/layers/network"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -41,8 +44,7 @@ func AssertDatagram(
 	var actual *gplayers.IPv4
 	select {
 	case <-ctx.Done():
-		t.Log("timeout reading from channel")
-		t.FailNow()
+		t.Error("timeout reading from channel.", string(debug.Stack()))
 	case actual = <-ch:
 	}
 
@@ -50,8 +52,16 @@ func AssertDatagram(
 }
 
 func FlagErrorForUnexpectedDatagrams(t *testing.T, ch <-chan *gplayers.IPv4) {
-	for ip := range ch {
-		t.Errorf("received more ip datagrams than expected: %+v", ip)
+	for datagram := range ch {
+		t.Errorf("received more ip datagrams than expected: %+v", datagram)
+	}
+}
+
+func CloseIntfsAndFlagErrorForUnexpectedData(t *testing.T, intfs ...network.Interface) {
+	for _, intf := range intfs {
+		assert.NoError(t, intf.Close())
+		FlagErrorForUnexpectedDatagrams(t, intf.Recv())
+		CloseEthPortsAndFlagErrorForUnexpectedData(t, intf.Card())
 	}
 }
 

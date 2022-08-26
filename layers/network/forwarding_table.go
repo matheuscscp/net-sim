@@ -1,7 +1,6 @@
 package network
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -16,21 +15,10 @@ type (
 	// are used to index the trie, starting from the most
 	// significant bit. The scan only stops when the next trie
 	// node doesn't have the next bit, hence returning the most
-	// specific known route. A default route (a network interface
-	// name) is returned when no routes are known for a given IP
-	// address.
+	// specific known route.
 	ForwardingTable struct {
-		root             *forwardingTableNode
-		mu               sync.RWMutex
-		defaultRouteIntf string // interface name
-	}
-
-	// ForwardingTableConfig contains the configs for initializing
-	// a ForwardingTable.
-	ForwardingTableConfig struct {
-		// DefaultRoute.NetworkCIDR is ignored.
-		DefaultRoute RouteConfig   `yaml:"defaultRoute"`
-		Routes       []RouteConfig `yaml:"routes"`
+		root *forwardingTableNode
+		mu   sync.RWMutex
 	}
 
 	// RouteConfig represents a route: a network CIDR mapping to an
@@ -50,69 +38,79 @@ type (
 
 // NewForwardingTable is a convenience constructor for a ForwardingTable.
 // Directly instantiating the public struct is also valid.
-func NewForwardingTable(conf ForwardingTableConfig) (*ForwardingTable, error) {
-	f := &ForwardingTable{defaultRouteIntf: conf.DefaultRoute.Interface}
-	for i := range conf.Routes {
-		route := &conf.Routes[i]
+func NewForwardingTable(routes []RouteConfig) (*ForwardingTable, error) {
+	f := &ForwardingTable{}
+	for i := range routes {
+		route := &routes[i]
 		network, err := pkgnet.ParseNetworkCIDR(route.NetworkCIDR)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing network cidr for route %d: %w", i, err)
 		}
 		ipv4, prefixLength := toIPv4AndPrefixLength(network)
-		if prefixLength == 0 {
-			return nil, fmt.Errorf("network prefix length of route %d is zero. prefer specifying a default route", i)
-		}
 		intf := route.Interface
 		f.storeRoute(ipv4, prefixLength, intf)
 	}
 	return f, nil
 }
 
-func (f *ForwardingTable) FindRoute(ipAddress net.IP) string {
+func (f *ForwardingTable) FindRoute(ipAddress net.IP) (intf string, ok bool) {
 	ipv4 := ipAddress.To4()
 
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	intf := &f.defaultRouteIntf
+	if f.root == nil {
+		return
+	}
 	u := f.root
+	if u.intf != nil {
+		intf, ok = *u.intf, true
+	}
 	for _, octet := range ipv4 {
 		for i := 7; 0 <= i; i-- {
-			if u == nil {
-				return *intf
-			}
-			if u.intf != nil {
-				intf = u.intf
-			}
 			bit := (octet >> i) & 1
 			if bit == 1 {
 				u = u.one
 			} else {
 				u = u.zero
 			}
+			if u == nil {
+				return
+			}
+			if u.intf != nil {
+				intf, ok = *u.intf, true
+			}
 		}
 	}
 
-	return *intf
+	return
 }
 
-func (f *ForwardingTable) SetDefaultRoute(intf string) {
-	f.mu.Lock()
-	f.defaultRouteIntf = intf
-	f.mu.Unlock()
-}
-
-func (f *ForwardingTable) StoreRoute(network *net.IPNet, intf string) error {
-	ipv4, prefixLength := toIPv4AndPrefixLength(network)
-	if prefixLength == 0 {
-		return errors.New("cannot store route for /0 network. prefer specifying a default route")
+// StoreRoutesFromConfig atomically stores a list of routes if all of them
+// are valid.
+func (f *ForwardingTable) StoreRoutesFromConfig(routes []RouteConfig) error {
+	networks := make([]*net.IPNet, 0, len(routes))
+	for i := range routes {
+		network, err := pkgnet.ParseNetworkCIDR(routes[i].NetworkCIDR)
+		if err != nil {
+			return fmt.Errorf("error parsing network cidr for route %d: %w", i, err)
+		}
+		networks = append(networks, network)
 	}
+	for i := range routes {
+		ipv4, prefixLength := toIPv4AndPrefixLength(networks[i])
+		f.mu.Lock()
+		f.storeRoute(ipv4, prefixLength, routes[i].Interface)
+		f.mu.Unlock()
+	}
+	return nil
+}
 
+func (f *ForwardingTable) StoreRoute(network *net.IPNet, intf string) {
+	ipv4, prefixLength := toIPv4AndPrefixLength(network)
 	f.mu.Lock()
 	f.storeRoute(ipv4, prefixLength, intf)
 	f.mu.Unlock()
-
-	return nil
 }
 
 func (f *ForwardingTable) storeRoute(ipv4 net.IP, prefixLength int, intf string) {
@@ -158,10 +156,6 @@ func (f *ForwardingTable) findNode(
 	prefixLength int,
 	create bool,
 ) *forwardingTableNode {
-	if prefixLength == 0 {
-		return nil
-	}
-
 	if f.root == nil {
 		if !create {
 			return nil
@@ -173,6 +167,9 @@ func (f *ForwardingTable) findNode(
 	u := f.root
 	for _, octet := range ipv4 {
 		for i := 7; 0 <= i; i-- {
+			if bitIdx == prefixLength {
+				return u
+			}
 			bit := (octet >> i) & 1
 			if bit == 1 {
 				if u.one == nil {
@@ -192,13 +189,10 @@ func (f *ForwardingTable) findNode(
 				u = u.zero
 			}
 			bitIdx++
-			if bitIdx == prefixLength {
-				return u
-			}
 		}
 	}
 
-	return nil
+	return u
 }
 
 func toIPv4AndPrefixLength(network *net.IPNet) (net.IP, int) {

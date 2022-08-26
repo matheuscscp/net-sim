@@ -3,6 +3,7 @@ package link
 import (
 	"net"
 
+	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 )
 
@@ -15,10 +16,12 @@ const (
 	MaxQueueSize = 1024
 )
 
-var (
-	// BroadcastMACAddress is the address used for broadcast in a local network.
-	BroadcastMACAddress = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+// BroadcastMACAddress is the IP address used for broadcast in a local network.
+func BroadcastMACAddress() net.HardwareAddr {
+	return net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+}
 
-	// BroadcastMACEndpoint is the address used for broadcast in a local network.
-	BroadcastMACEndpoint = gplayers.NewMACEndpoint(BroadcastMACAddress)
-)
+// BroadcastMACEndpoint is the IP address used for broadcast in a local network.
+func BroadcastMACEndpoint() gopacket.Endpoint {
+	return gplayers.NewMACEndpoint(BroadcastMACAddress())
+}

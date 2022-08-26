@@ -7,6 +7,7 @@ import (
 
 	"github.com/matheuscscp/net-sim/layers/link"
 
+	gplayers "github.com/google/gopacket/layers"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -26,7 +27,7 @@ var switchCmd = &cobra.Command{
 			return fmt.Errorf("error decoding switch config from yaml: %w", err)
 		}
 
-		// start switch
+		// start switch with cancel on interruption signals
 		ctx, cancel := contextWithCancelOnInterrupt(context.Background())
 		defer cancel()
 		waitClose, err := link.RunSwitch(ctx, conf)
@@ -34,7 +35,11 @@ var switchCmd = &cobra.Command{
 			return err
 		}
 
-		waitClose()
+		waitClose(func(portBuffer <-chan *gplayers.Ethernet) {
+			// drain remaining frames
+			for range portBuffer {
+			}
+		})
 		return nil
 	},
 }

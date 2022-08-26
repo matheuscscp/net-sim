@@ -1,0 +1,42 @@
+routes:
+- networkCIDR: 0.0.0.0/0
+  interface: eth0
+
+
+interfaces:
+- name: eth0
+  ipAddress: "1.0.0.1"
+  gateway: "1.0.0.1"
+  networkCIDR: 1.0.0.0/8
+  ethernetPort:
+    macAddress: 00:00:5e:00:53:aa
+    fullDuplexUnreliablePort:
+      recvUDPEndpoint: :50001
+      sendUDPEndpoint: :50101
+- name: eth1
+  ipAddress: "2.0.0.1"
+  gateway: "2.0.0.1"
+  networkCIDR: 2.0.0.0/8
+  ethernetPort:
+    macAddress: 00:00:5e:00:53:ab
+    fullDuplexUnreliablePort:
+      recvUDPEndpoint: :50002
+      sendUDPEndpoint: :50102
+- name: eth2
+  ipAddress: "3.0.0.1"
+  gateway: "3.0.0.1"
+  networkCIDR: 3.0.0.0/8
+  ethernetPort:
+    macAddress: 00:00:5e:00:53:ac
+    fullDuplexUnreliablePort:
+      recvUDPEndpoint: :50003
+      sendUDPEndpoint: :50103
+- name: eth3
+  ipAddress: "4.0.0.1"
+  gateway: "4.0.0.1"
+  networkCIDR: 4.0.0.0/8
+  ethernetPort:
+    macAddress: 00:00:5e:00:53:ad
+    fullDuplexUnreliablePort:
+      recvUDPEndpoint: :50004
+      sendUDPEndpoint: :50104
