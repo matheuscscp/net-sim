@@ -1,8 +1,10 @@
 package test
 
 import (
+	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -32,7 +34,17 @@ func AssertFrame(
 		NewPacket(buf.Bytes(), gplayers.LayerTypeEthernet, gopacket.Lazy).
 		LinkLayer().
 		LayerContents()
-	actual := <-ch
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var actual *gplayers.Ethernet
+	select {
+	case <-ctx.Done():
+		t.Log("timeout reading from channel")
+		t.FailNow()
+	case actual = <-ch:
+	}
+
 	assert.Equal(t, expected, actual)
 }
 
