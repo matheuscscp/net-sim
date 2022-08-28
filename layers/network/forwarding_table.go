@@ -133,22 +133,28 @@ func (f *ForwardingTable) DeleteRoute(network *net.IPNet) {
 	u.intf = nil
 
 	// cleanup trie
-	for parent := u.parent; parent != nil; parent = u.parent {
+	for ; u != nil; u = u.parent {
+		// are there still relevant routes under u?
 		if u.one != nil || u.zero != nil || u.intf != nil {
 			return
 		}
+		// no, u can be reaped
+
+		if u.parent == nil { // u is the root
+			break
+		}
+
+		// cleanup bidirectional edge between u and u.parent
+		parent := u.parent
 		u.parent = nil
 		if parent.one == u {
 			parent.one = nil
 		} else {
 			parent.zero = nil
 		}
-		u = parent
 	}
 	// u is the root at this point
-	if f.root.one == nil && f.root.zero == nil {
-		f.root = nil
-	}
+	f.root = nil
 }
 
 func (f *ForwardingTable) findNode(
