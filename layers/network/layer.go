@@ -219,7 +219,9 @@ func (l *loopbackIntf) Send(ctx context.Context, datagram *gplayers.IPv4) error 
 	datagram.SrcIP = loIPAddr
 	datagram.DstIP = loIPAddr
 
-	// serialize and deserialize datagram
+	// serialize and deserialize datagram (one more level of
+	// validation and also helps the tests by setting the
+	// .BaseLayer.Contents field consistently)
 	buf, err := SerializeDatagram(datagram)
 	if err != nil {
 		return err
