@@ -75,8 +75,8 @@ func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort
 		l:          logrus.WithField("port_mac_address", macAddress.String()),
 		macAddress: gplayers.NewMACEndpoint(macAddress),
 		medium:     medium,
-		out:        make(chan *outFrame, MaxQueueSize),
-		in:         make(chan *gplayers.Ethernet, MaxQueueSize),
+		out:        make(chan *outFrame, channelSize),
+		in:         make(chan *gplayers.Ethernet, channelSize),
 	}
 	nic.startThreads()
 	return nic, nil
@@ -164,7 +164,7 @@ func (e *ethernetPort) Send(ctx context.Context, frame *gplayers.Ethernet) error
 
 	// serialize crc32 checksum
 	crc := crc32.Checksum(buf.Bytes(), crc32.MakeTable(crc32.Castagnoli))
-	b := make([]byte, 4)
+	b := make([]byte, ChecksumLength)
 	binary.LittleEndian.PutUint32(b, crc)
 	finalBuf := append(buf.Bytes(), b...)
 
@@ -182,10 +182,10 @@ func (e *ethernetPort) decap(frameBuf []byte) {
 	var frame *gplayers.Ethernet
 	err := func() error {
 		// split frame data and crc
-		if len(frameBuf) < 4 {
-			return errors.New("frame has less than 4 bytes, cannot be valid")
+		if len(frameBuf) < ChecksumLength {
+			return fmt.Errorf("frame has less than %d bytes, cannot be valid", ChecksumLength)
 		}
-		siz := len(frameBuf) - 4
+		siz := len(frameBuf) - ChecksumLength
 		frameData, crcBuf := frameBuf[:siz], frameBuf[siz:]
 
 		// validate crc

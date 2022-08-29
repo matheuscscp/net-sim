@@ -118,9 +118,9 @@ func NewInterface(ctx context.Context, conf InterfaceConfig) (Interface, error) 
 		network:   network,
 		broadcast: gplayers.NewIPEndpoint(pkgnet.BroadcastIPAddress(network)),
 		card:      card,
-		out:       make(chan *outDatagram, MaxQueueSize),
-		in:        make(chan *gplayers.IPv4, MaxQueueSize),
-		arpEvents: make(chan *gopacket.Endpoint, MaxQueueSize),
+		out:       make(chan *outDatagram, channelSize),
+		in:        make(chan *gplayers.IPv4, channelSize),
+		arpEvents: make(chan *gopacket.Endpoint, channelSize),
 	}
 	intf.startThreads()
 	return intf, nil

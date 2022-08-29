@@ -57,7 +57,7 @@ func TestEndSystem(t *testing.T) {
 	var wg sync.WaitGroup
 	var endSystemIntfs []network.Interface
 	var gateway network.Interface
-	datagramsTargetedToTransportLayer := make(chan *gplayers.IPv4, network.MaxQueueSize)
+	datagramsTargetedToTransportLayer := make(chan *gplayers.IPv4, 1024)
 
 	defer func() {
 		cancel()
