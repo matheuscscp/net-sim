@@ -23,8 +23,7 @@ const (
 	// allowed on the payload of a datagram (the network layer name for a packet).
 	MTU = link.MTU - HeaderLength
 
-	// MaxQueueSize is the maximum size of the network layer channels.
-	MaxQueueSize = 1024
+	channelSize = 1024
 )
 
 // LoopbackIPAddress is the IP address used for loopback in a host.

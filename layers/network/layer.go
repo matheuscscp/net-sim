@@ -88,7 +88,7 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 	}
 
 	// create loopback interface
-	lo := &loopbackIntf{buf: make(chan *gplayers.IPv4, MaxQueueSize)}
+	lo := &loopbackIntf{buf: make(chan *gplayers.IPv4, channelSize)}
 	addIntf(lo)
 
 	// create configured interfaces
