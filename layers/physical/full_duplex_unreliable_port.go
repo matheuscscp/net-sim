@@ -62,8 +62,12 @@ func NewFullDuplexUnreliablePort(
 }
 
 func (f *fullDuplexUnreliablePort) Send(ctx context.Context, payload []byte) (n int, err error) {
+	// validate payload size
 	if len(payload) == 0 {
 		return 0, common.ErrCannotSendEmpty
+	}
+	if len(payload) > MTU {
+		return 0, fmt.Errorf("payload is larger than physical layer MTU (%d)", MTU)
 	}
 
 	c := net.Conn(f.conn)
