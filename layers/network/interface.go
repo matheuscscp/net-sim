@@ -268,44 +268,56 @@ func (i *interfaceImpl) sendARP(ctx context.Context, arp *gplayers.ARP) error {
 
 func (i *interfaceImpl) sendDelayedDatagramsWaitingforARP(ctx context.Context) {
 	// we index the ARP dst IP address to store the *outDatagram
-	// in a set. this is so we can transmit batches of waiting
+	// in a list. this is so we can transmit batches of waiting
 	// datagrams right away when the relevant ARP reply arrives
 	// and updates the ARP table with the required ARP dst MAC
 	// address
 	type arpDstIPAddressDescriptor struct {
-		pendingDatagrams map[*outDatagram]struct{}
+		pendingDatagrams []*outDatagram
 		deadline         time.Time
 	}
 	pendingDatagramsByARPDstIPAddress := make(map[gopacket.Endpoint]*arpDstIPAddressDescriptor)
 	index := func(datagram *outDatagram) {
 		a, ok := pendingDatagramsByARPDstIPAddress[datagram.arpDstIPAddress]
 		if !ok {
-			a = &arpDstIPAddressDescriptor{pendingDatagrams: make(map[*outDatagram]struct{})}
+			a = &arpDstIPAddressDescriptor{}
 		}
-		a.pendingDatagrams[datagram] = struct{}{}
+		a.pendingDatagrams = append(a.pendingDatagrams, datagram)
 		a.deadline = time.Now().Add(100 * time.Millisecond)
 		pendingDatagramsByARPDstIPAddress[datagram.arpDstIPAddress] = a
 	}
 
 	// the queue stores an ARP dst IP address whenever a datagram
 	// is delayed because the required ARP entry is missing
-	var queue []*gopacket.Endpoint
-	push := func(arpDstIPAddress *gopacket.Endpoint) {
-		queue = append(queue, arpDstIPAddress)
+	type queueElem struct {
+		arpDstIPAddress *gopacket.Endpoint
+		next            *queueElem
 	}
-	pop := func() (*gopacket.Endpoint, bool) {
-		for i, arpDstIPAddress := range queue {
-			a, ok := pendingDatagramsByARPDstIPAddress[*arpDstIPAddress]
-			if ok && a.deadline.Before(time.Now()) {
-				queue = queue[i+1:]
-				if len(queue) == 0 {
-					queue = nil
-				}
-				return arpDstIPAddress, true
-			}
+	var queueFront, queueBack *queueElem
+	push := func(arpDstIPAddress *gopacket.Endpoint) {
+		elem := &queueElem{arpDstIPAddress: arpDstIPAddress}
+		if queueBack == nil {
+			queueFront = elem
+			queueBack = elem
+		} else {
+			queueBack.next = elem
+			queueBack = elem
 		}
-		queue = nil
-		return nil, false
+	}
+	pop := func() *gopacket.Endpoint {
+		popped := queueFront
+		if popped == nil {
+			return nil
+		}
+
+		// pop front
+		queueFront = queueFront.next
+		if queueFront == nil {
+			queueBack = nil
+		}
+		popped.next = nil
+
+		return popped.arpDstIPAddress
 	}
 
 	// the timer is used to wake up the thread whenever there are pending
@@ -314,21 +326,21 @@ func (i *interfaceImpl) sendDelayedDatagramsWaitingforARP(ctx context.Context) {
 	defer stopTimer()
 	resetTimer := func() {
 		stopTimer()
-		for i, arpDstIPAddress := range queue {
+
+		for ; queueFront != nil; pop() {
+			arpDstIPAddress := queueFront.arpDstIPAddress
 			a, ok := pendingDatagramsByARPDstIPAddress[*arpDstIPAddress]
 			if ok {
-				queue = queue[i:]
 				timer.Reset(time.Until(a.deadline))
 				return
 			}
 		}
-		queue = nil
 	}
 
 	flush := func(arpDstIPAddress *gopacket.Endpoint) {
 		a, ok := pendingDatagramsByARPDstIPAddress[*arpDstIPAddress]
 		if ok {
-			for datagram := range a.pendingDatagrams {
+			for _, datagram := range a.pendingDatagrams {
 				i.sendOrLogError(datagram)
 			}
 		}
@@ -348,8 +360,12 @@ func (i *interfaceImpl) sendDelayedDatagramsWaitingforARP(ctx context.Context) {
 			flush(arpDstIPAddress)
 			resetTimer()
 		case <-timer.C:
-			if arpDstIPAddress, ok := pop(); ok {
-				flush(arpDstIPAddress)
+			for arpDstIPAddress := pop(); arpDstIPAddress != nil; arpDstIPAddress = pop() {
+				a, ok := pendingDatagramsByARPDstIPAddress[*arpDstIPAddress]
+				if ok && a.deadline.Before(time.Now()) {
+					flush(arpDstIPAddress)
+					break
+				}
 			}
 			resetTimer()
 		}
