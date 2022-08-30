@@ -99,3 +99,19 @@ func TestForwardingTableDeleteRoute(t *testing.T) {
 	assert.Equal(t, "", intf)
 	assert.False(t, ok)
 }
+
+func TestForwardingTableClear(t *testing.T) {
+	t.Parallel()
+
+	table := &network.ForwardingTable{}
+
+	table.StoreRoute(test.MustParseCIDR(t, "1.1.1.0/24"), "eth1")
+	intf, ok := table.FindRoute(net.ParseIP("1.1.1.1"))
+	assert.Equal(t, "eth1", intf)
+	assert.True(t, ok)
+
+	table.Clear()
+	intf, ok = table.FindRoute(net.ParseIP("1.1.1.1"))
+	assert.Equal(t, "", intf)
+	assert.False(t, ok)
+}

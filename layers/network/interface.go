@@ -23,12 +23,17 @@ type (
 	// by an ethernet card, an IP address, a gateway IP address and a
 	// network CIDR block.
 	//
-	// The interface uses ARP queries to resolve dst IP addresses inside
-	// the network. When the IP address is outside the network, an ARP
-	// query is sent to resolve the MAC address of the gateway instead.
+	// When sending a datagram out the interface sets the src IP address
+	// of the datagram to its own IP address, unless if running on
+	// "forwarding mode".
 	//
 	// Inbound datagrams with dst IP address not matching the interface's
-	// IP address will be discarded, unless if running on "forwarding mode".
+	// IP address will be discarded, unless if running on "forwarding mode"
+	// or if the dst IP address is the broadcast IP address of the network.
+	//
+	// The interface uses ARP queries to resolve dst IP addresses inside
+	// the network. When the dst IP address is outside the network, an ARP
+	// query is sent to resolve the MAC address of the gateway instead.
 	Interface interface {
 		Send(ctx context.Context, datagram *gplayers.IPv4) error
 		Recv() <-chan *gplayers.IPv4
@@ -402,10 +407,8 @@ func (i *interfaceImpl) decap(ctx context.Context, frame *gplayers.Ethernet) {
 			}
 
 			return nil
-		default:
-			l.Info("ethertype not implemented. discarding")
-			return nil
 		}
+		return nil
 	}()
 
 	if err != nil {
