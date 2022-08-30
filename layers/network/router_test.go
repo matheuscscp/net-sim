@@ -81,7 +81,7 @@ func TestRouter(t *testing.T) {
 	var wg sync.WaitGroup
 	var router network.Layer
 	routerPeers := make([]network.Interface, len(routerPeersConfig))
-	datagramsTargetedToTransportLayer := make(chan *gplayers.IPv4)
+	datagramsTargetedToTransportLayer := make(chan *gplayers.IPv4, 1024)
 
 	defer func() {
 		cancel()

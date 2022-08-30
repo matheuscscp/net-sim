@@ -16,7 +16,7 @@ type (
 	// No guarantee is provided about the delivery/integrity.
 	FullDuplexUnreliablePort interface {
 		Send(ctx context.Context, payload []byte) (n int, err error)
-		Recv(ctx context.Context, payloadBuf []byte) (n int, err error)
+		Recv(ctx context.Context, payload []byte) (n int, err error)
 		Close() error
 	}
 
@@ -97,7 +97,7 @@ func (f *fullDuplexUnreliablePort) Send(ctx context.Context, payload []byte) (n 
 	}
 }
 
-func (f *fullDuplexUnreliablePort) Recv(ctx context.Context, payloadBuf []byte) (n int, err error) {
+func (f *fullDuplexUnreliablePort) Recv(ctx context.Context, payload []byte) (n int, err error) {
 	c := net.Conn(f.conn)
 
 	// initially, no timeout
@@ -109,7 +109,7 @@ func (f *fullDuplexUnreliablePort) Recv(ctx context.Context, payloadBuf []byte) 
 	ch := make(chan struct{})
 	go func() {
 		defer close(ch)
-		n, err = c.Read(payloadBuf)
+		n, err = c.Read(payload)
 	}()
 
 	// wait for ctx cancel

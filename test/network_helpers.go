@@ -19,17 +19,17 @@ func AssertDatagram(
 	t *testing.T,
 	ch <-chan *gplayers.IPv4,
 	src, dst net.IP,
-	payloadBuf []byte,
+	payload []byte,
 ) {
 	expected := &gplayers.IPv4{
 		BaseLayer: gplayers.BaseLayer{
-			Payload: payloadBuf,
+			Payload: payload,
 		},
 		SrcIP:   src,
 		DstIP:   dst,
 		Version: 4,
 		IHL:     5,
-		Length:  uint16(len(payloadBuf)) + 20,
+		Length:  uint16(len(payload)) + 20,
 	}
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{}

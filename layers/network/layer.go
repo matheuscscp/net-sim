@@ -34,7 +34,7 @@ type (
 	// A consumer of IP datagrams (like the transport layer) may
 	// consume by accessing the Recv() channel of the interfaces
 	// directly, or via the Listen() method (which spwans one
-	// goroutine for each interface/channel and finishes them when
+	// thread for each interface/channel and finishes them when
 	// the given ctx is cancelled), but not both simultaneously.
 	// The Listen() method may be sequentially called multiple
 	// times for any given Layer instance.
@@ -260,11 +260,11 @@ func (l *loopbackIntf) Send(ctx context.Context, datagram *gplayers.IPv4) error 
 	// serialize and deserialize datagram (one more level of
 	// validation and also helps the tests by setting the
 	// .BaseLayer.Contents field consistently)
-	buf, err := SerializeDatagram(datagram)
+	b, err := SerializeDatagram(datagram)
 	if err != nil {
 		return err
 	}
-	datagram, err = DeserializeDatagram(buf)
+	datagram, err = DeserializeDatagram(b)
 	if err != nil {
 		return err
 	}
