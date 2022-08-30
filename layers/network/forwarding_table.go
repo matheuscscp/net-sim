@@ -15,7 +15,7 @@ type (
 	// are used to index the trie, starting from the most
 	// significant bit. The scan only stops when the next trie
 	// node doesn't have the next bit, hence returning the most
-	// specific known route.
+	// specific known route. All the public methods are thread-safe.
 	ForwardingTable struct {
 		root *forwardingTableNode
 		mu   sync.RWMutex
@@ -155,6 +155,25 @@ func (f *ForwardingTable) DeleteRoute(network *net.IPNet) {
 	}
 	// u is the root at this point
 	f.root = nil
+}
+
+func (f *ForwardingTable) Clear() {
+	f.mu.Lock()
+	clear(f.root)
+	f.root = nil
+	f.mu.Unlock()
+}
+
+func clear(u *forwardingTableNode) {
+	if u == nil {
+		return
+	}
+	clear(u.one)
+	clear(u.zero)
+	u.parent = nil
+	u.one = nil
+	u.zero = nil
+	u.intf = nil
 }
 
 func (f *ForwardingTable) findNode(

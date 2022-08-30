@@ -55,14 +55,15 @@ var (
 func TestEndSystem(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	var endSystemIntfs []network.Interface
+	var endSystem network.Layer
 	var gateway network.Interface
 	datagramsTargetedToTransportLayer := make(chan *gplayers.IPv4, 1024)
 
 	defer func() {
 		cancel()
 		wg.Wait()
-		test.CloseIntfsAndFlagErrorForUnexpectedData(t, endSystemIntfs...)
+		assert.NoError(t, endSystem.Close())
+		test.CloseIntfsAndFlagErrorForUnexpectedData(t, endSystem.Interfaces()...)
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, gateway)
 		close(datagramsTargetedToTransportLayer)
 		test.FlagErrorForUnexpectedDatagrams(t, datagramsTargetedToTransportLayer)
@@ -72,14 +73,12 @@ func TestEndSystem(t *testing.T) {
 	endSystem, err := network.NewLayer(ctx, endSystemConfig)
 	require.NoError(t, err)
 	require.NotNil(t, endSystem)
-	endSystemIntfs = endSystem.Interfaces()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		endSystem.Listen(ctx, func(datagram *gplayers.IPv4) {
 			datagramsTargetedToTransportLayer <- datagram
 		})
-		assert.NoError(t, endSystem.Close())
 	}()
 	lo := endSystem.Interface("lo")
 	eth0 := endSystem.Interface("eth0")

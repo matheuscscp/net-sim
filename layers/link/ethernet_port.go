@@ -22,8 +22,13 @@ type (
 	// EthernetPort represents a hypothetical ethernet network interface
 	// card, composed by a physical port and a MAC address.
 	//
+	// When sending a frame out it goes with the MAC address of the
+	// port as its src MAC address, unless if running on "forwarding
+	// mode".
+	//
 	// Inbound frames with dst MAC address not matching the port's MAC
-	// address will be discarded, unless if running on "forwarding mode".
+	// address will be discarded, unless if running on "forwarding mode"
+	// or if the dst MAC address is the broadcast MAC address.
 	EthernetPort interface {
 		Send(ctx context.Context, frame *gplayers.Ethernet) error
 		Recv() <-chan *gplayers.Ethernet

@@ -10,7 +10,8 @@ import (
 
 type (
 	// ARPTable represents an ARP table, which maps IP addresses
-	// to MAC addresses in the local network.
+	// to MAC addresses in the local network. All the public
+	// methods are thread-safe.
 	ARPTable struct {
 		mp map[gopacket.Endpoint]gopacket.Endpoint
 		mu sync.RWMutex

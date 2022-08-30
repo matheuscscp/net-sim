@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -15,16 +16,28 @@ import (
 )
 
 type (
-	// Layer represents the network layer of a device. It provides
-	// the means to send and receive IP datagrams to and from the
-	// IP network, composed by a forwarding table and a set of
-	// network interfaces. When sending a datagram out, the layer
-	// indexes the forwarding table to choose the interface.
-	// A consumer of IP datagrams may consume by accessing the
-	// Recv() channel of the interfaces.
+	// Layer represents the network layer of a device, composed by a
+	// forwarding table and a set of network interfaces. It provides
+	// the means to send and receive IP datagrams to and from the IP
+	// networks attached to the underlying interfaces.
 	//
-	// Inbound datagrams with dst IP address not matching the interface's
-	// IP address will be discarded, unless if running on "forwarding mode".
+	// When sending a datagram out, the network layer indexes the
+	// forwarding table with the dst IP address to choose the
+	// interface. The datagram goes out with the IP address of the
+	// interface as its src IP address, unless if running on
+	// "forwarding mode" and the datagram came in from one of the
+	// other interfaces. The src IP address of the datagram may be
+	// specified in order to choose the network interface to go out
+	// from. When doing so, the IP address must match the IP address
+	// of one of the interfaces, otherwise an error will be returned.
+	//
+	// A consumer of IP datagrams (like the transport layer) may
+	// consume by accessing the Recv() channel of the interfaces
+	// directly, or via the Listen() method (which spwans one
+	// goroutine for each interface/channel and finishes them when
+	// the given ctx is cancelled), but not both simultaneously.
+	// The Listen() method may be sequentially called multiple
+	// times for any given Layer instance.
 	Layer interface {
 		Send(ctx context.Context, datagram *gplayers.IPv4) error
 		ForwardingMode() bool
@@ -32,15 +45,18 @@ type (
 		Interfaces() []Interface
 		Interface(name string) Interface
 		// Listen blocks listening for datagrams in all interfaces
-		// and forwards them to the given listener function.
+		// and forwards them to the given listener function. It
+		// returns when the given ctx is cancelled.
 		//
 		// The listener will be invoked from multiple threads, so
 		// the underlying code must be thread-safe (this is a
 		// performance optimization decision).
 		//
-		// The Recv() channels of the interfaces should not be drained
+		// The Recv() channels of the interfaces should not be consumed
 		// elsewhere while Listen()ing, otherwise the listener function
-		// will miss those datagrams.
+		// will miss those datagrams. For the same reason, Listen is not
+		// thread-safe, but it may safely be called multiple times
+		// sequentially.
 		Listen(ctx context.Context, listener func(datagram *gplayers.IPv4))
 		Close() error
 	}
@@ -58,6 +74,7 @@ type (
 		conf            *LayerConfig
 		intfs           []Interface
 		intfMap         map[string]Interface
+		ipMap           map[gopacket.Endpoint]Interface
 		forwardingTable *ForwardingTable
 	}
 
@@ -67,14 +84,20 @@ type (
 	}
 )
 
+var (
+	errNoL3Route = errors.New("no L3 route")
+)
+
 // NewLayer creates Layer from config.
 func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 	// prepare for creating interfaces
 	intfs := make([]Interface, 0, len(conf.Interfaces))
 	intfMap := make(map[string]Interface)
+	ipMap := make(map[gopacket.Endpoint]Interface)
 	addIntf := func(intf Interface) {
 		intfs = append(intfs, intf)
 		intfMap[intf.Name()] = intf
+		ipMap[intf.IPAddress()] = intf
 	}
 	overlapIntf := func(intf Interface) error {
 		intfNet := intf.Network()
@@ -124,18 +147,33 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 		conf:            &conf,
 		intfs:           intfs,
 		intfMap:         intfMap,
+		ipMap:           ipMap,
 		forwardingTable: forwardingTable,
 	}, nil
 }
 
 func (l *layer) Send(ctx context.Context, datagram *gplayers.IPv4) error {
+	if datagram.SrcIP == nil {
+		return l.findRouteAndSend(ctx, datagram)
+	}
+
+	// find interface matching datagram.SrcIP
+	srcIPAddress := gplayers.NewIPEndpoint(datagram.SrcIP)
+	intf, ok := l.ipMap[srcIPAddress]
+	if !ok {
+		return fmt.Errorf("specified src IP Address does not match any of the network interfaces: %s", datagram.SrcIP)
+	}
+	return intf.Send(ctx, datagram)
+}
+
+func (l *layer) findRouteAndSend(ctx context.Context, datagram *gplayers.IPv4) error {
 	intfName, ok := l.forwardingTable.FindRoute(datagram.DstIP)
 	if !ok {
-		return nil // no route, discarding
+		return errNoL3Route
 	}
 	intf, ok := l.intfMap[intfName]
 	if !ok {
-		return fmt.Errorf("target interface %s does not exist", intfName)
+		return fmt.Errorf("the interface %s chosen by indexing the forwarding table with the dst IP address %s does not exist", intfName, datagram.DstIP)
 	}
 	return intf.Send(ctx, datagram)
 }
@@ -187,7 +225,7 @@ func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv
 					// if the dst IP address does not match the IP address or the broadcast
 					// IP address of any interface, then the interfaces are necessarily
 					// running in forwarding mode. forward the datagram
-					if err := l.Send(ctx, datagram); err != nil {
+					if err := l.findRouteAndSend(ctx, datagram); err != nil && !errors.Is(err, errNoL3Route) {
 						logrus.
 							WithError(err).
 							WithField("from_interface", intf.Name()).
