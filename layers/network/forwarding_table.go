@@ -159,21 +159,8 @@ func (f *ForwardingTable) DeleteRoute(network *net.IPNet) {
 
 func (f *ForwardingTable) Clear() {
 	f.mu.Lock()
-	clear(f.root)
 	f.root = nil
 	f.mu.Unlock()
-}
-
-func clear(u *forwardingTableNode) {
-	if u == nil {
-		return
-	}
-	clear(u.one)
-	clear(u.zero)
-	u.parent = nil
-	u.one = nil
-	u.zero = nil
-	u.intf = nil
 }
 
 func (f *ForwardingTable) findNode(

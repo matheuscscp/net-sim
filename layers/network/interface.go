@@ -72,7 +72,7 @@ type (
 		in        chan *gplayers.IPv4
 		arpEvents chan *gopacket.Endpoint
 		arpTable  ARPTable
-		cancelCtx func()
+		cancelCtx context.CancelFunc
 		wg        sync.WaitGroup
 	}
 
@@ -95,11 +95,11 @@ func NewInterface(ctx context.Context, conf InterfaceConfig) (Interface, error) 
 	}
 	ipAddress := net.ParseIP(conf.IPAddress)
 	if ipAddress == nil { // net.ParseID() does not return an error
-		return nil, errors.New("unknown error parsing ip address")
+		return nil, fmt.Errorf("unknown error parsing ip address '%s'", conf.IPAddress)
 	}
 	gateway := net.ParseIP(conf.Gateway)
 	if gateway == nil {
-		return nil, errors.New("unknown error parsing gateway")
+		return nil, fmt.Errorf("unknown error parsing gateway '%s'", conf.Gateway)
 	}
 	network, err := pkgnet.ParseNetworkCIDR(conf.NetworkCIDR)
 	if err != nil {

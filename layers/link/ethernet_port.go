@@ -54,7 +54,7 @@ type (
 		medium     physical.FullDuplexUnreliablePort
 		out        chan *outFrame
 		in         chan *gplayers.Ethernet
-		cancelCtx  func()
+		cancelCtx  context.CancelFunc
 		wg         sync.WaitGroup
 	}
 
