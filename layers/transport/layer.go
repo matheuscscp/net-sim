@@ -80,13 +80,11 @@ func NewLayer(networkLayer network.Layer) Layer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	l := &layer{
-		tcp:       &tcp{networkLayer: networkLayer, transportLayerCtx: ctx},
-		udp:       &udp{networkLayer: networkLayer, transportLayerCtx: ctx},
+		tcp:       newTCP(ctx, networkLayer),
+		udp:       newUDP(ctx, networkLayer),
 		cancelCtx: cancel,
 		giantBuf:  make(chan *gplayers.IPv4, demuxThreads*channelSize),
 	}
-	l.tcp.init()
-	l.udp.init()
 
 	// create thread for listening to IP datagrams and push them
 	// into the giant buffer
