@@ -67,7 +67,7 @@ func (u *udp) init() {
 
 func (u *udp) listen(address string) (*UDPListener, error) {
 	// parse address
-	intPort, ipAddress, err := parseHostPort(address)
+	intPort, ipAddress, err := parseHostPort(address, false /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
@@ -116,7 +116,7 @@ func (u *udp) dial(ctx context.Context, address string) (*UDPConn, error) {
 	l.Close() // stop accepting new connections
 
 	// parse remote address
-	intPort, ipAddress, err := parseHostPort(address)
+	intPort, ipAddress, err := parseHostPort(address, true /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
@@ -127,17 +127,16 @@ func (u *udp) dial(ctx context.Context, address string) (*UDPConn, error) {
 
 func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
 	// decap
-	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeUDP, gopacket.Lazy)
-	segment := pkt.TransportLayer().(*gplayers.UDP)
-	if segment == nil || len(segment.Payload) == 0 {
+	segment, err := DeserializeUDPSegment(datagram.Payload)
+	if err != nil {
 		logrus.
-			WithError(pkt.ErrorLayer().Error()).
+			WithError(err).
 			WithField("datagram", datagram).
 			Error("error decapsulating transport layer")
 		return
 	}
 
-	// find listener and lock conns
+	// find listener
 	dstPort, dstIPAddress := segment.DstPort, gplayers.NewIPEndpoint(datagram.DstIP)
 	u.listenersMu.RLock()
 	l, ok := u.listeners[dstPort]
@@ -160,21 +159,22 @@ func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
 		return
 	}
 
-	// check if listener was Close()d
+	// no already existing conn, need a new one. check if listener was Close()d
 	if l.pendingConns == nil {
 		l.connsMu.Unlock()
 		return // drop rule: port stopped listening
 	}
 
-	// port is listening, find or create new pending conn
+	// port is listening, find or create a new pending conn
 	c, ok = l.pendingConns[remoteAddr]
 	if !ok {
 		c = newConn(l, remoteAddr)
 		l.pendingConns[remoteAddr] = c
 	}
+	l.connsCond.Broadcast()
 	l.connsMu.Unlock()
 
-	// deliver payload to conn
+	// deliver payload to the new conn
 	c.pushRead(segment.Payload)
 }
 
@@ -233,7 +233,7 @@ func (u *UDPListener) Addr() net.Addr {
 // Dial returns a UDP net.Conn bound to the given address.
 // No network calls/handshakes are performed.
 func (u *UDPListener) Dial(address string) (net.Conn, error) {
-	intPort, ipAddress, err := parseHostPort(address)
+	intPort, ipAddress, err := parseHostPort(address, true /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
@@ -340,24 +340,25 @@ func (u *UDPConn) Write(b []byte) (n int, err error) {
 	}
 
 	// serialize UDP segment
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{}
-	segment := &gplayers.UDP{
+	datagramPayload, err := SerializeUDPSegment(&gplayers.UDP{
+		BaseLayer: gplayers.BaseLayer{
+			Payload: b,
+		},
 		SrcPort: u.l.port,
 		DstPort: u.remoteAddr.port,
 		Length:  uint16(len(b) + UDPHeaderLength),
-	}
-	payload := gopacket.Payload(b)
-	if err := gopacket.SerializeLayers(buf, opts, segment, payload); err != nil {
-		return 0, fmt.Errorf("error serializing transport layer: %w", err)
+	})
+	if err != nil {
+		return 0, err
 	}
 
 	// send
 	err = u.l.networkLayer.Send(context.Background(), &gplayers.IPv4{
 		BaseLayer: gplayers.BaseLayer{
-			Payload: buf.Bytes(),
+			Payload: datagramPayload,
 		},
-		DstIP: u.remoteAddr.ipAddress.Raw(),
+		DstIP:    u.remoteAddr.ipAddress.Raw(),
+		Protocol: gplayers.IPProtocolUDP,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("error sending IP datagram: %w", err)
@@ -450,4 +451,23 @@ func (u *udpAddr) Network() string {
 
 func (u *udpAddr) String() string {
 	return fmt.Sprintf("%s:%d", u.ipAddress, u.port)
+}
+
+func SerializeUDPSegment(segment *gplayers.UDP) ([]byte, error) {
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{}
+	payload := gopacket.Payload(segment.Payload)
+	if err := gopacket.SerializeLayers(buf, opts, segment, payload); err != nil {
+		return nil, fmt.Errorf("error serializing transport layer: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+func DeserializeUDPSegment(buf []byte) (*gplayers.UDP, error) {
+	pkt := gopacket.NewPacket(buf, gplayers.LayerTypeUDP, gopacket.Lazy)
+	segment := pkt.TransportLayer().(*gplayers.UDP)
+	if segment == nil || len(segment.Payload) == 0 {
+		return nil, fmt.Errorf("error deserializing transport layer: %w", pkt.ErrorLayer().Error())
+	}
+	return segment, nil
 }

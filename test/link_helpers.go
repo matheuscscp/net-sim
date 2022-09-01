@@ -32,10 +32,10 @@ func AssertFrame(
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{}
 	require.NoError(t, expected.SerializeTo(buf, opts))
-	expected.Contents = gopacket.
+	expected = gopacket.
 		NewPacket(buf.Bytes(), gplayers.LayerTypeEthernet, gopacket.Lazy).
-		LinkLayer().
-		LayerContents()
+		LinkLayer().(*gplayers.Ethernet)
+	expected.Payload = payload
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
