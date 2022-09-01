@@ -6,8 +6,8 @@ import (
 	"os"
 
 	"github.com/matheuscscp/net-sim/layers/network"
+	"github.com/matheuscscp/net-sim/layers/transport"
 
-	gplayers "github.com/google/gopacket/layers"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -33,26 +33,29 @@ var routerCmd = &cobra.Command{
 		// create network layer
 		ctx, cancel := contextWithCancelOnInterrupt(context.Background())
 		defer cancel()
-		l, err := network.NewLayer(ctx, network.LayerConfig{
+		networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
 			ForwardingMode: true,
 			Interfaces:     conf.Interfaces,
 		})
 		if err != nil {
 			return err
 		}
-		if err := l.ForwardingTable().StoreRoutesFromConfig(conf.Routes); err != nil {
+		if err := networkLayer.ForwardingTable().StoreRoutesFromConfig(conf.Routes); err != nil {
 			return err
 		}
 
-		// listen with cancel on interruption signals
-		l.Listen(ctx, func(datagram *gplayers.IPv4) {
-			// TODO: notify transport layer
-		})
+		// create transport layer
+		transportLayer := transport.NewLayer(networkLayer)
 
-		l.Close()
+		// TODO: run application layer servers (DNS, DHCP, BGP, NAT)
+
+		// wait interruption signals and close
+		<-ctx.Done()
+		transportLayer.Close()
+		networkLayer.Close()
 
 		// drain remaining datagrams
-		for _, intf := range l.Interfaces() {
+		for _, intf := range networkLayer.Interfaces() {
 			for range intf.Recv() {
 			}
 		}

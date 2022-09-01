@@ -43,8 +43,8 @@ type (
 	}
 
 	udp struct {
-		networkLayer      network.Layer
-		transportLayerCtx context.Context
+		ctx          context.Context
+		networkLayer network.Layer
 
 		listenersMu sync.RWMutex
 		listeners   map[gplayers.UDPPort]*UDPListener
@@ -61,8 +61,13 @@ type (
 	}
 )
 
-func (u *udp) init() {
-	u.listeners = make(map[gplayers.UDPPort]*UDPListener)
+func newUDP(ctx context.Context, networkLayer network.Layer) *udp {
+	return &udp{
+		ctx:          ctx,
+		networkLayer: networkLayer,
+
+		listeners: make(map[gplayers.UDPPort]*UDPListener),
+	}
 }
 
 func (u *udp) listen(address string) (*UDPListener, error) {
@@ -95,7 +100,7 @@ func (u *udp) listen(address string) (*UDPListener, error) {
 
 	l := &UDPListener{
 		networkLayer:      u.networkLayer,
-		transportLayerCtx: u.transportLayerCtx,
+		transportLayerCtx: u.ctx,
 		port:              port,
 		ipAddress:         ipAddress,
 		conns:             make(map[udpAddr]*UDPConn),
@@ -108,19 +113,23 @@ func (u *udp) listen(address string) (*UDPListener, error) {
 }
 
 func (u *udp) dial(ctx context.Context, address string) (*UDPConn, error) {
-	// allocate random port
-	l, err := u.listen(":0")
-	if err != nil {
-		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
-	}
-	l.Close() // stop accepting new connections
-
 	// parse remote address
 	intPort, ipAddress, err := parseHostPort(address, true /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
 	port := gplayers.UDPPort(intPort)
+
+	// allocate random port
+	l, err := u.listen(":0")
+	if err != nil {
+		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
+	}
+
+	// stop accepting connections
+	if err := l.Close(); err != nil {
+		return nil, fmt.Errorf("error closing local listener for other connections: %w", err)
+	}
 
 	return l.findOrCreateConn(udpAddr{port, *ipAddress}), nil
 }
@@ -148,34 +157,12 @@ func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
 		return // drop rule: port is listening but dst IP address does not match the IP bound by the port
 	}
 
-	// check already existing conn
+	// demux
 	srcPort, srcIPAddress := segment.SrcPort, gplayers.NewIPEndpoint(datagram.SrcIP)
 	remoteAddr := udpAddr{srcPort, srcIPAddress}
-	l.connsMu.Lock()
-	c, ok := l.conns[remoteAddr]
-	if ok {
-		l.connsMu.Unlock()
+	if c := l.demux(remoteAddr); c != nil {
 		c.pushRead(segment.Payload)
-		return
 	}
-
-	// no already existing conn, need a new one. check if listener was Close()d
-	if l.pendingConns == nil {
-		l.connsMu.Unlock()
-		return // drop rule: port stopped listening
-	}
-
-	// port is listening, find or create a new pending conn
-	c, ok = l.pendingConns[remoteAddr]
-	if !ok {
-		c = newConn(l, remoteAddr)
-		l.pendingConns[remoteAddr] = c
-	}
-	l.connsCond.Broadcast()
-	l.connsMu.Unlock()
-
-	// deliver payload to the new conn
-	c.pushRead(segment.Payload)
 }
 
 func (u *UDPListener) Accept() (net.Conn, error) {
@@ -247,13 +234,38 @@ func (u *UDPListener) findOrCreateConn(remoteAddr udpAddr) *UDPConn {
 
 	c, ok := u.conns[remoteAddr]
 	if !ok {
-		c = newConn(u, remoteAddr)
+		c = newUDPConn(u, remoteAddr)
 		u.conns[remoteAddr] = c
 	}
 	return c
 }
 
-func newConn(l *UDPListener, remoteAddr udpAddr) *UDPConn {
+func (u *UDPListener) demux(remoteAddr udpAddr) *UDPConn {
+	u.connsMu.Lock()
+	defer u.connsMu.Unlock()
+
+	// check already existing conn
+	if c, ok := u.conns[remoteAddr]; ok {
+		return c
+	}
+
+	// no already existing conn, need a new one. check if listener was Close()d first
+	if u.pendingConns == nil {
+		return nil // drop rule: port stopped listening
+	}
+
+	// port is listening. find or create a new pending conn
+	c, ok := u.pendingConns[remoteAddr]
+	if !ok {
+		c = newUDPConn(u, remoteAddr)
+		u.pendingConns[remoteAddr] = c
+	}
+	u.connsCond.Broadcast() // unblock Accept()
+
+	return c
+}
+
+func newUDPConn(l *UDPListener, remoteAddr udpAddr) *UDPConn {
 	c := &UDPConn{
 		l:          l,
 		remoteAddr: remoteAddr,
@@ -395,12 +407,12 @@ func (u *UDPConn) RemoteAddr() net.Addr {
 
 // SetDeadline is the same as calling SetReadDeadline() and
 // SetWriteDeadline().
-func (u *UDPConn) SetDeadline(t time.Time) error {
+func (u *UDPConn) SetDeadline(d time.Time) error {
 	var err error
-	if dErr := u.SetReadDeadline(t); dErr != nil {
+	if dErr := u.SetReadDeadline(d); dErr != nil {
 		err = multierror.Append(err, fmt.Errorf("error setting read deadline: %w", err))
 	}
-	if dErr := u.SetWriteDeadline(t); dErr != nil {
+	if dErr := u.SetWriteDeadline(d); dErr != nil {
 		err = multierror.Append(err, fmt.Errorf("error setting write deadline: %w", err))
 	}
 	return err
@@ -410,9 +422,9 @@ func (u *UDPConn) SetDeadline(t time.Time) error {
 // starts a thread that only returns when the deadline
 // is reached, so calling it with a time point that is
 // too distant in the future is not a good idea.
-func (u *UDPConn) SetReadDeadline(t time.Time) error {
+func (u *UDPConn) SetReadDeadline(d time.Time) error {
 	u.inMu.Lock()
-	u.readDeadline = t
+	u.readDeadline = d
 	u.inMu.Unlock()
 
 	// start thread to wait until either the deadline or the
@@ -420,7 +432,7 @@ func (u *UDPConn) SetReadDeadline(t time.Time) error {
 	// blocked readers
 	go func() {
 		defer u.inCond.Broadcast() // notify blocked readers
-		timer := time.NewTimer(time.Until(t))
+		timer := time.NewTimer(time.Until(d))
 		select {
 		case <-u.l.transportLayerCtx.Done():
 			if !timer.Stop() {
@@ -437,12 +449,8 @@ func (u *UDPConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (u *UDPConn) SetWriteDeadline(t time.Time) error {
+func (u *UDPConn) SetWriteDeadline(d time.Time) error {
 	return nil // no-op
-}
-
-func (u *UDPConn) Listener() *UDPListener {
-	return u.l
 }
 
 func (u *udpAddr) Network() string {
