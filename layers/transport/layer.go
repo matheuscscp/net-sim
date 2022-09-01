@@ -32,7 +32,7 @@ type (
 		// only accept incoming connections targeted to this
 		// IP address. If the port zero is used, a random
 		// port will be chosen.
-		Listen(ctx context.Context, network, address string) (net.Listener, error)
+		Listen(network, address string) (net.Listener, error)
 
 		// Dial starts a connection with the given IPv4:port address
 		// on the given network ("tcp" or "udp") and returns a handler
@@ -60,6 +60,7 @@ type (
 		udp       *udp
 		cancelCtx context.CancelFunc
 		wg        sync.WaitGroup
+		giantBuf  chan *gplayers.IPv4
 	}
 )
 
@@ -82,22 +83,18 @@ func NewLayer(networkLayer network.Layer) Layer {
 		tcp:       &tcp{networkLayer: networkLayer, transportLayerCtx: ctx},
 		udp:       &udp{networkLayer: networkLayer, transportLayerCtx: ctx},
 		cancelCtx: cancel,
+		giantBuf:  make(chan *gplayers.IPv4, demuxThreads*channelSize),
 	}
 	l.tcp.init()
 	l.udp.init()
-
-	giantBuf := make(chan *gplayers.IPv4, demuxThreads*channelSize)
 
 	// create thread for listening to IP datagrams and push them
 	// into the giant buffer
 	l.wg.Add(1)
 	go func() {
-		defer func() {
-			close(giantBuf)
-			l.wg.Done()
-		}()
+		defer l.wg.Done()
 		networkLayer.Listen(ctx, func(datagram *gplayers.IPv4) {
-			giantBuf <- datagram
+			l.giantBuf <- datagram
 		})
 	}()
 
@@ -113,7 +110,7 @@ func NewLayer(networkLayer network.Layer) Layer {
 				select {
 				case <-ctxDone:
 					return
-				case datagram := <-giantBuf:
+				case datagram := <-l.giantBuf:
 					switch datagram.Protocol {
 					case gplayers.IPProtocolTCP:
 						l.tcp.decapAndDemux(datagram)
@@ -128,7 +125,7 @@ func NewLayer(networkLayer network.Layer) Layer {
 	return l
 }
 
-func (l *layer) Listen(ctx context.Context, network, address string) (net.Listener, error) {
+func (l *layer) Listen(network, address string) (net.Listener, error) {
 	if network == TCP {
 		return l.tcp.listen(address)
 	}
@@ -158,10 +155,15 @@ func (l *layer) Close() error {
 	l.cancelCtx = nil
 	l.wg.Wait()
 
+	// close channels
+	close(l.giantBuf)
+	for range l.giantBuf {
+	}
+
 	return nil
 }
 
-func parseHostPort(address string) (int, *gopacket.Endpoint, error) {
+func parseHostPort(address string, needIP bool) (int, *gopacket.Endpoint, error) {
 	host, p, err := net.SplitHostPort(address)
 	if err != nil {
 		return 0, nil, fmt.Errorf("error splitting in host:port: %w", err)
@@ -181,6 +183,9 @@ func parseHostPort(address string) (int, *gopacket.Endpoint, error) {
 		}
 		ep := gplayers.NewIPEndpoint(ip)
 		ipAddress = &ep
+	}
+	if needIP && ipAddress == nil {
+		return 0, nil, errors.New("host cannot be empty")
 	}
 	return port, ipAddress, nil
 }
