@@ -30,9 +30,11 @@ var routerCmd = &cobra.Command{
 			return fmt.Errorf("error decoding router config from yaml: %w", err)
 		}
 
-		// create network layer
+		// create ctx
 		ctx, cancel := contextWithCancelOnInterrupt(context.Background())
 		defer cancel()
+
+		// create network layer
 		networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
 			ForwardingMode: true,
 			Interfaces:     conf.Interfaces,
@@ -49,14 +51,18 @@ var routerCmd = &cobra.Command{
 
 		// TODO: run application layer servers (DNS, DHCP, BGP, NAT)
 
-		// wait interruption signals and close
+		// wait for ctx and close
 		<-ctx.Done()
 		transportLayer.Close()
 		networkLayer.Close()
 
-		// drain remaining datagrams
+		// drain remaining data
 		for _, intf := range networkLayer.Interfaces() {
 			for range intf.Recv() {
+			}
+			if intf.Card() != nil { // loopback
+				for range intf.Card().Recv() {
+				}
 			}
 		}
 
