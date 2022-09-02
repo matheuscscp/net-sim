@@ -53,15 +53,15 @@ func TestConnectedPorts(t *testing.T) {
 
 func TestReadLessBytesThanBufSize(t *testing.T) {
 	port1, err := physical.NewFullDuplexUnreliablePort(context.Background(), physical.FullDuplexUnreliablePortConfig{
-		RecvUDPEndpoint: ":50001",
-		SendUDPEndpoint: ":50002",
+		RecvUDPEndpoint: ":50011",
+		SendUDPEndpoint: ":50012",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, port1)
 
 	port2, err := physical.NewFullDuplexUnreliablePort(context.Background(), physical.FullDuplexUnreliablePortConfig{
-		RecvUDPEndpoint: ":50002",
-		SendUDPEndpoint: ":50001",
+		RecvUDPEndpoint: ":50012",
+		SendUDPEndpoint: ":50011",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, port2)
