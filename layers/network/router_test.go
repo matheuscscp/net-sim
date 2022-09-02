@@ -26,8 +26,8 @@ var (
 			Card: link.EthernetPortConfig{
 				MACAddress: "00:00:5e:00:53:aa",
 				Medium: physical.FullDuplexUnreliablePortConfig{
-					RecvUDPEndpoint: ":50001",
-					SendUDPEndpoint: ":50101",
+					RecvUDPEndpoint: ":50091",
+					SendUDPEndpoint: ":50191",
 				},
 			},
 		},
@@ -39,8 +39,8 @@ var (
 			Card: link.EthernetPortConfig{
 				MACAddress: "00:00:5e:00:53:ab",
 				Medium: physical.FullDuplexUnreliablePortConfig{
-					RecvUDPEndpoint: ":50002",
-					SendUDPEndpoint: ":50102",
+					RecvUDPEndpoint: ":50092",
+					SendUDPEndpoint: ":50192",
 				},
 			},
 		},
@@ -55,8 +55,8 @@ var (
 			Card: link.EthernetPortConfig{
 				MACAddress: "00:00:5e:01:53:aa",
 				Medium: physical.FullDuplexUnreliablePortConfig{
-					RecvUDPEndpoint: ":50101",
-					SendUDPEndpoint: ":50001",
+					RecvUDPEndpoint: ":50191",
+					SendUDPEndpoint: ":50091",
 				},
 			},
 		},
@@ -68,8 +68,8 @@ var (
 			Card: link.EthernetPortConfig{
 				MACAddress: "00:00:5e:01:53:ab",
 				Medium: physical.FullDuplexUnreliablePortConfig{
-					RecvUDPEndpoint: ":50102",
-					SendUDPEndpoint: ":50002",
+					RecvUDPEndpoint: ":50192",
+					SendUDPEndpoint: ":50092",
 				},
 			},
 		},

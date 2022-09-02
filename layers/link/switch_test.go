@@ -18,22 +18,22 @@ var (
 			{
 				MACAddress: "00:00:5e:00:53:aa",
 				Medium: physical.FullDuplexUnreliablePortConfig{
-					RecvUDPEndpoint: ":50001",
-					SendUDPEndpoint: ":50101",
+					RecvUDPEndpoint: ":50061",
+					SendUDPEndpoint: ":50161",
 				},
 			},
 			{
 				MACAddress: "00:00:5e:00:53:ab",
 				Medium: physical.FullDuplexUnreliablePortConfig{
-					RecvUDPEndpoint: ":50002",
-					SendUDPEndpoint: ":50102",
+					RecvUDPEndpoint: ":50062",
+					SendUDPEndpoint: ":50162",
 				},
 			},
 			{
 				MACAddress: "00:00:5e:00:53:ac",
 				Medium: physical.FullDuplexUnreliablePortConfig{
-					RecvUDPEndpoint: ":50003",
-					SendUDPEndpoint: ":50103",
+					RecvUDPEndpoint: ":50063",
+					SendUDPEndpoint: ":50163",
 				},
 			},
 		},
@@ -43,22 +43,22 @@ var (
 		{
 			MACAddress: "00:00:5e:01:53:aa",
 			Medium: physical.FullDuplexUnreliablePortConfig{
-				RecvUDPEndpoint: ":50101",
-				SendUDPEndpoint: ":50001",
+				RecvUDPEndpoint: ":50161",
+				SendUDPEndpoint: ":50061",
 			},
 		},
 		{
 			MACAddress: "00:00:5e:01:53:ab",
 			Medium: physical.FullDuplexUnreliablePortConfig{
-				RecvUDPEndpoint: ":50102",
-				SendUDPEndpoint: ":50002",
+				RecvUDPEndpoint: ":50162",
+				SendUDPEndpoint: ":50062",
 			},
 		},
 		{
 			MACAddress: "00:00:5e:01:53:ac",
 			Medium: physical.FullDuplexUnreliablePortConfig{
-				RecvUDPEndpoint: ":50103",
-				SendUDPEndpoint: ":50003",
+				RecvUDPEndpoint: ":50163",
+				SendUDPEndpoint: ":50063",
 			},
 		},
 	}

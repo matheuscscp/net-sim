@@ -19,8 +19,8 @@ func TestConnectedPorts(t *testing.T) {
 	port1, err := link.NewEthernetPort(context.Background(), link.EthernetPortConfig{
 		MACAddress: port1MAC.String(),
 		Medium: physical.FullDuplexUnreliablePortConfig{
-			RecvUDPEndpoint: ":50001",
-			SendUDPEndpoint: ":50002",
+			RecvUDPEndpoint: ":50021",
+			SendUDPEndpoint: ":50022",
 		},
 	})
 	require.NoError(t, err)
@@ -32,8 +32,8 @@ func TestConnectedPorts(t *testing.T) {
 	port2, err := link.NewEthernetPort(context.Background(), link.EthernetPortConfig{
 		MACAddress: port2MAC.String(),
 		Medium: physical.FullDuplexUnreliablePortConfig{
-			RecvUDPEndpoint: ":50002",
-			SendUDPEndpoint: ":50001",
+			RecvUDPEndpoint: ":50022",
+			SendUDPEndpoint: ":50021",
 		},
 	})
 	require.NoError(t, err)
@@ -72,8 +72,8 @@ func TestWrongDstMACAddress(t *testing.T) {
 	port1, err := link.NewEthernetPort(context.Background(), link.EthernetPortConfig{
 		MACAddress: port1MAC.String(),
 		Medium: physical.FullDuplexUnreliablePortConfig{
-			RecvUDPEndpoint: ":50001",
-			SendUDPEndpoint: ":50002",
+			RecvUDPEndpoint: ":50031",
+			SendUDPEndpoint: ":50032",
 		},
 	})
 	require.NoError(t, err)
@@ -84,8 +84,8 @@ func TestWrongDstMACAddress(t *testing.T) {
 	port2, err := link.NewEthernetPort(context.Background(), link.EthernetPortConfig{
 		MACAddress: port2MAC.String(),
 		Medium: physical.FullDuplexUnreliablePortConfig{
-			RecvUDPEndpoint: ":50002",
-			SendUDPEndpoint: ":50001",
+			RecvUDPEndpoint: ":50032",
+			SendUDPEndpoint: ":50031",
 		},
 	})
 	require.NoError(t, err)
@@ -127,8 +127,8 @@ func TestBroadcastMACAddress(t *testing.T) {
 	port1, err := link.NewEthernetPort(context.Background(), link.EthernetPortConfig{
 		MACAddress: port1MAC.String(),
 		Medium: physical.FullDuplexUnreliablePortConfig{
-			RecvUDPEndpoint: ":50001",
-			SendUDPEndpoint: ":50002",
+			RecvUDPEndpoint: ":50041",
+			SendUDPEndpoint: ":50042",
 		},
 	})
 	require.NoError(t, err)
@@ -139,8 +139,8 @@ func TestBroadcastMACAddress(t *testing.T) {
 	port2, err := link.NewEthernetPort(context.Background(), link.EthernetPortConfig{
 		MACAddress: port2MAC.String(),
 		Medium: physical.FullDuplexUnreliablePortConfig{
-			RecvUDPEndpoint: ":50002",
-			SendUDPEndpoint: ":50001",
+			RecvUDPEndpoint: ":50042",
+			SendUDPEndpoint: ":50041",
 		},
 	})
 	require.NoError(t, err)
@@ -168,8 +168,8 @@ func TestForwardingMode(t *testing.T) {
 	port1, err := link.NewEthernetPort(context.Background(), link.EthernetPortConfig{
 		MACAddress: port1MAC.String(),
 		Medium: physical.FullDuplexUnreliablePortConfig{
-			RecvUDPEndpoint: ":50001",
-			SendUDPEndpoint: ":50002",
+			RecvUDPEndpoint: ":50051",
+			SendUDPEndpoint: ":50052",
 		},
 	})
 	require.NoError(t, err)
@@ -181,8 +181,8 @@ func TestForwardingMode(t *testing.T) {
 		ForwardingMode: true,
 		MACAddress:     port2MAC.String(),
 		Medium: physical.FullDuplexUnreliablePortConfig{
-			RecvUDPEndpoint: ":50002",
-			SendUDPEndpoint: ":50001",
+			RecvUDPEndpoint: ":50052",
+			SendUDPEndpoint: ":50051",
 		},
 	})
 	require.NoError(t, err)
