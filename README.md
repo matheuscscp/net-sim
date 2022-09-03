@@ -5,9 +5,23 @@ I've always wanted to write some code that simulates networking devices/agents/a
 
 # Roadmap
 
-* [ ] MVP end-to-end test with https://github.com/matheuscscp/crypto-project/tree/master/pkg/mytls
+## MVP
+
+* [X] Physical Layer: Full duplex unreliable wire
+* [X] Physical Layer: Packet capture (.pcapng)
+* [X] Link Layer: Ethernet
+* [X] Link Layer: L2 Switch
+* [X] Network Layer: IP/ARP
+* [X] Network Layer: Router
+* [X] Transport Layer: UDP
+* [ ] Transport Layer: TCP
+* [X] Application Layer: Reverse and forward TCP proxy
+* [X] Application Layer: Reverse and forward HTTP proxy
+
+## Applications over UDP and hacks for solving problems of the Network Layer
+
 * [ ] DHCP
-* [ ] NAT
 * [ ] DNS
-* [ ] BGP
 * [ ] ICMP
+* [ ] NAT (the hack)
+* [ ] BGP
