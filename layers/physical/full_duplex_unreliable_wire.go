@@ -11,33 +11,33 @@ import (
 )
 
 type (
-	// FullDuplexUnreliablePort represents a hypothetical guided
+	// FullDuplexUnreliableWire represents a hypothetical guided
 	// medium where you can send and receive bytes at the same time.
 	// No guarantee is provided about the delivery/integrity.
-	FullDuplexUnreliablePort interface {
+	FullDuplexUnreliableWire interface {
 		Send(ctx context.Context, payload []byte) (n int, err error)
 		Recv(ctx context.Context, payload []byte) (n int, err error)
 		Close() error
 	}
 
-	// FullDuplexUnreliablePortConfig contains the UDP configs for
-	// the concrete implementation of FullDuplexUnreliablePort.
-	FullDuplexUnreliablePortConfig struct {
+	// FullDuplexUnreliableWireConfig contains the UDP configs for
+	// the concrete implementation of FullDuplexUnreliableWire.
+	FullDuplexUnreliableWireConfig struct {
 		RecvUDPEndpoint string `yaml:"recvUDPEndpoint"`
 		SendUDPEndpoint string `yaml:"sendUDPEndpoint"`
 	}
 
-	fullDuplexUnreliablePort struct {
-		conf *FullDuplexUnreliablePortConfig
+	fullDuplexUnreliableWire struct {
+		conf *FullDuplexUnreliableWireConfig
 		conn *net.UDPConn
 	}
 )
 
-// NewFullDuplexUnreliablePort creates a FullDuplexUnreliablePort from config.
-func NewFullDuplexUnreliablePort(
+// NewFullDuplexUnreliableWire creates a FullDuplexUnreliableWire from config.
+func NewFullDuplexUnreliableWire(
 	ctx context.Context,
-	conf FullDuplexUnreliablePortConfig,
-) (FullDuplexUnreliablePort, error) {
+	conf FullDuplexUnreliableWireConfig,
+) (FullDuplexUnreliableWire, error) {
 	recvAddr, err := net.ResolveUDPAddr("udp", conf.RecvUDPEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("error resolving udp address of recv endpoint: %w", err)
@@ -55,13 +55,13 @@ func NewFullDuplexUnreliablePort(
 		}
 		return nil, errors.New(errMsg)
 	}
-	return &fullDuplexUnreliablePort{
+	return &fullDuplexUnreliableWire{
 		conf: &conf,
 		conn: udpConn,
 	}, nil
 }
 
-func (f *fullDuplexUnreliablePort) Send(ctx context.Context, payload []byte) (n int, err error) {
+func (f *fullDuplexUnreliableWire) Send(ctx context.Context, payload []byte) (n int, err error) {
 	// validate payload size
 	if len(payload) == 0 {
 		return 0, common.ErrCannotSendEmpty
@@ -97,7 +97,7 @@ func (f *fullDuplexUnreliablePort) Send(ctx context.Context, payload []byte) (n 
 	}
 }
 
-func (f *fullDuplexUnreliablePort) Recv(ctx context.Context, payload []byte) (n int, err error) {
+func (f *fullDuplexUnreliableWire) Recv(ctx context.Context, payload []byte) (n int, err error) {
 	c := net.Conn(f.conn)
 
 	// initially, no timeout
@@ -125,7 +125,7 @@ func (f *fullDuplexUnreliablePort) Recv(ctx context.Context, payload []byte) (n 
 	}
 }
 
-func (f *fullDuplexUnreliablePort) Close() error {
+func (f *fullDuplexUnreliableWire) Close() error {
 	if c := f.conn; c != nil {
 		f.conn = nil
 		return c.Close()

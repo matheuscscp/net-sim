@@ -10,7 +10,7 @@ interfaces:
   networkCIDR: 1.0.0.0/8
   ethernetPort:
     macAddress: 00:00:5e:00:53:aa
-    fullDuplexUnreliablePort:
+    fullDuplexUnreliableWire:
       recvUDPEndpoint: :50001
       sendUDPEndpoint: :50101
 - name: eth1
@@ -19,7 +19,7 @@ interfaces:
   networkCIDR: 2.0.0.0/8
   ethernetPort:
     macAddress: 00:00:5e:00:53:ab
-    fullDuplexUnreliablePort:
+    fullDuplexUnreliableWire:
       recvUDPEndpoint: :50002
       sendUDPEndpoint: :50102
 - name: eth2
@@ -28,7 +28,7 @@ interfaces:
   networkCIDR: 3.0.0.0/8
   ethernetPort:
     macAddress: 00:00:5e:00:53:ac
-    fullDuplexUnreliablePort:
+    fullDuplexUnreliableWire:
       recvUDPEndpoint: :50003
       sendUDPEndpoint: :50103
 - name: eth3
@@ -37,6 +37,6 @@ interfaces:
   networkCIDR: 4.0.0.0/8
   ethernetPort:
     macAddress: 00:00:5e:00:53:ad
-    fullDuplexUnreliablePort:
+    fullDuplexUnreliableWire:
       recvUDPEndpoint: :50004
       sendUDPEndpoint: :50104

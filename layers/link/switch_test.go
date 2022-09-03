@@ -17,21 +17,21 @@ var (
 		Ports: []link.EthernetPortConfig{
 			{
 				MACAddress: "00:00:5e:00:53:aa",
-				Medium: physical.FullDuplexUnreliablePortConfig{
+				Medium: physical.FullDuplexUnreliableWireConfig{
 					RecvUDPEndpoint: ":50061",
 					SendUDPEndpoint: ":50161",
 				},
 			},
 			{
 				MACAddress: "00:00:5e:00:53:ab",
-				Medium: physical.FullDuplexUnreliablePortConfig{
+				Medium: physical.FullDuplexUnreliableWireConfig{
 					RecvUDPEndpoint: ":50062",
 					SendUDPEndpoint: ":50162",
 				},
 			},
 			{
 				MACAddress: "00:00:5e:00:53:ac",
-				Medium: physical.FullDuplexUnreliablePortConfig{
+				Medium: physical.FullDuplexUnreliableWireConfig{
 					RecvUDPEndpoint: ":50063",
 					SendUDPEndpoint: ":50163",
 				},
@@ -42,21 +42,21 @@ var (
 	switchPeersConfig = []*link.EthernetPortConfig{
 		{
 			MACAddress: "00:00:5e:01:53:aa",
-			Medium: physical.FullDuplexUnreliablePortConfig{
+			Medium: physical.FullDuplexUnreliableWireConfig{
 				RecvUDPEndpoint: ":50161",
 				SendUDPEndpoint: ":50061",
 			},
 		},
 		{
 			MACAddress: "00:00:5e:01:53:ab",
-			Medium: physical.FullDuplexUnreliablePortConfig{
+			Medium: physical.FullDuplexUnreliableWireConfig{
 				RecvUDPEndpoint: ":50162",
 				SendUDPEndpoint: ":50062",
 			},
 		},
 		{
 			MACAddress: "00:00:5e:01:53:ac",
-			Medium: physical.FullDuplexUnreliablePortConfig{
+			Medium: physical.FullDuplexUnreliableWireConfig{
 				RecvUDPEndpoint: ":50163",
 				SendUDPEndpoint: ":50063",
 			},
