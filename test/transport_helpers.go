@@ -9,7 +9,6 @@ import (
 
 	"github.com/matheuscscp/net-sim/layers/transport"
 
-	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,21 +20,17 @@ func AssertUDPSegment(
 	src, dst gplayers.UDPPort,
 	payload []byte,
 ) {
-	expected := &gplayers.UDP{
+	expectedBuf, err := transport.SerializeUDPSegment(&gplayers.UDP{
 		BaseLayer: gplayers.BaseLayer{
 			Payload: payload,
 		},
 		SrcPort: src,
 		DstPort: dst,
 		Length:  uint16(len(payload)) + 8,
-	}
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{}
-	require.NoError(t, expected.SerializeTo(buf, opts))
-	expected = gopacket.
-		NewPacket(buf.Bytes(), gplayers.LayerTypeUDP, gopacket.Lazy).
-		TransportLayer().(*gplayers.UDP)
-	expected.Payload = payload
+	})
+	require.NoError(t, err)
+	expected, err := transport.DeserializeUDPSegment(expectedBuf)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
