@@ -14,7 +14,7 @@ import (
 
 var switchCmd = &cobra.Command{
 	Use:   "switch <yaml-config-file>",
-	Short: "switch simulates an L2 switch",
+	Short: "Simulate an L2 switch on the overlay network",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// read config

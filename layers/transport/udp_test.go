@@ -59,7 +59,7 @@ func TestUDPClientServer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, serverConn)
 	readBuf := make([]byte, len(helloPayload)*2)
-	require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(50*time.Millisecond)))
+	require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(10*time.Millisecond)))
 	n, err = serverConn.Read(readBuf)
 	require.NoError(t, err)
 	assert.Equal(t, len(helloPayload), n)
@@ -83,7 +83,7 @@ func TestUDPClientServer(t *testing.T) {
 		DstPort: 65535,
 		// the client only accepts the dialed IP address as src IP address
 	}, net.ParseIP("127.0.0.1") /*srcIPAddress*/, nil /*dstIPAddress*/)
-	require.NoError(t, client.SetReadDeadline(time.Now().Add(50*time.Millisecond)))
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(10*time.Millisecond)))
 	n, err = client.Read(readBuf)
 	require.NoError(t, err)
 	assert.Equal(t, len(helloPayload), n)
@@ -98,7 +98,7 @@ func TestUDPClientServer(t *testing.T) {
 		DstPort: 65535,
 		// the client only accepts the dialed IP address as src IP address
 	}, net.ParseIP("99.0.0.1") /*srcIPAddress*/, nil /*dstIPAddress*/)
-	require.NoError(t, client.SetReadDeadline(time.Now().Add(50*time.Millisecond)))
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(10*time.Millisecond)))
 	n, err = client.Read(readBuf)
 	assert.Error(t, err)
 	assert.Equal(t, transport.ErrTimeout, err)
@@ -171,7 +171,7 @@ func TestUDPLocalServer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, serverConn)
 	readBuf := make([]byte, len(helloPayload)*2)
-	require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(50*time.Millisecond)))
+	require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(10*time.Millisecond)))
 	n, err := serverConn.Read(readBuf)
 	require.NoError(t, err)
 	assert.Equal(t, len(helloPayload), n)

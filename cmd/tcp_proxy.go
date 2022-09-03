@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/matheuscscp/net-sim/layers/network"
@@ -17,13 +19,12 @@ import (
 )
 
 var tcpProxyCmd = &cobra.Command{
-	Use:   "tcp-proxy <yaml-config-file> <ports...>",
-	Short: "tcp-proxy proxies TCP connections from the host network to the overlay netowrk",
-	Args:  cobra.MinimumNArgs(2),
+	Use:   "tcp-proxy <network-layer-yaml-config-file> <<host-port> <overlay-port>>...",
+	Short: "Proxy TCP connections from the host network to the overlay netowrk",
+	Args:  cobra.MinimumNArgs(3),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// read network layer config
 		confFile := args[0]
-		ports := args[1:]
 		b, err := os.ReadFile(confFile)
 		if err != nil {
 			return fmt.Errorf("error reading yaml network layer config file: %w", err)
@@ -34,19 +35,22 @@ var tcpProxyCmd = &cobra.Command{
 		}
 
 		// create host listeners (bind host ports)
-		listeners := make([]net.Listener, 0, len(ports))
-		for i, port := range ports {
-			l, err := net.Listen(transport.TCP, fmt.Sprintf(":%s", port))
+		ports := args[1:]
+		if len(ports)%2 == 1 {
+			return errors.New("number of specified ports is not even")
+		}
+		listeners := make([]net.Listener, 0, len(ports)/2)
+		for i := 0; i < len(ports); i += 2 {
+			hostPort := ports[i]
+			l, err := net.Listen(transport.TCP, fmt.Sprintf(":%s", hostPort))
 			if err != nil {
 				for j := i - 1; 0 <= j; j-- {
 					listeners[j].Close()
 				}
-				return fmt.Errorf("error listening on local port %s: %w", port, err)
+				return fmt.Errorf("error listening on host port %s: %w", hostPort, err)
 			}
 			listeners = append(listeners, l)
 		}
-		defer func() {
-		}()
 
 		// create ctx
 		ctx, cancel := contextWithCancelOnInterrupt(context.Background())
@@ -62,12 +66,16 @@ var tcpProxyCmd = &cobra.Command{
 		// start threads
 		var wg sync.WaitGroup
 		for i, lis := range listeners {
-			i := i
+			i := i * 2
 			lis := lis
-			l := logrus.WithField("port", ports[i])
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+
+				hostPort, overlayPort := ports[i], ports[i+1]
+				l := logrus.
+					WithField("host_port", hostPort).
+					WithField("overlay_port", overlayPort)
 
 				var wg2 sync.WaitGroup
 				defer wg2.Wait()
@@ -75,21 +83,26 @@ var tcpProxyCmd = &cobra.Command{
 					// accept conn on host port
 					client, err := lis.Accept()
 					if err != nil {
-						l.
-							WithError(err).
-							Error("error accepting connection on host port")
-						return // too bad
+						if !strings.Contains(err.Error(), "use of closed network connection") {
+							l.
+								WithError(err).
+								Error("error accepting connection on host port")
+						}
+						return
 					}
 					l := l.
 						WithField("client_local_addr", client.LocalAddr().String()).
 						WithField("client_remote_addr", client.RemoteAddr().String())
 
 					// connect to overlay port
-					server, err := transportLayer.Dial(ctx, transport.TCP, client.LocalAddr().String())
+					remoteHost, _, _ := net.SplitHostPort(client.RemoteAddr().String())
+					remoteAddr := fmt.Sprintf("%s:%s", remoteHost, overlayPort)
+					server, err := transportLayer.Dial(ctx, transport.TCP, remoteAddr)
 					if err != nil {
 						l.
 							WithError(err).
-							Error("error dialing to overlay endpoint")
+							Error("error dialing to server on overlay port")
+						client.Close()
 						continue // maybe transient
 					}
 					l = l.
