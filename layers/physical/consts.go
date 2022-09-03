@@ -14,4 +14,6 @@ const (
 	// To be even safer and make it round (and exactly one third of the usual
 	// 1500) we use 500.
 	MTU = 500
+
+	channelSize = 1024
 )
