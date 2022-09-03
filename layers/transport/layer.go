@@ -68,7 +68,7 @@ var (
 	ErrInvalidNetwork       = errors.New("invalid network")
 	ErrPortAlreadyInUse     = errors.New("port already in use")
 	ErrAllPortsAlreadyInUse = errors.New("all ports already in use")
-	ErrListenerClosed       = errors.New("listener closed")
+	ErrListenerClosed       = errors.New("listener closed (os error msg: use of closed network connection)")
 	ErrConnClosed           = errors.New("connection closed")
 	ErrTimeout              = errors.New("timeout")
 )
