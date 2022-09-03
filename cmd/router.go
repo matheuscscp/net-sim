@@ -14,7 +14,7 @@ import (
 
 var routerCmd = &cobra.Command{
 	Use:   "router <yaml-config-file>",
-	Short: "router simulates a router",
+	Short: "Simulate a router on the overlay network",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// read config

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/matheuscscp/net-sim/layers/link"
 	"github.com/matheuscscp/net-sim/layers/physical"
@@ -39,6 +40,11 @@ func TestConnectedPorts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, port2)
 	port2Recv := port2.Recv()
+
+	// there's a very frequent flake like this:
+	// time="2022-09-03T01:22:43Z" level=error msg="error receiving ethernet frame" error="read udp 127.0.0.1:50021->127.0.0.1:50022: read: connection refused" port_mac_address="00:00:5e:00:53:ae"
+	// so we try to mitigate it with small sleep of 10ms
+	time.Sleep(10 * time.Millisecond)
 
 	port1Payload := []byte("hello port2")
 	require.NoError(t, port1.Send(context.Background(), &gplayers.Ethernet{
