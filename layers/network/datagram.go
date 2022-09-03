@@ -9,7 +9,7 @@ import (
 
 func SerializeDatagram(datagram *gplayers.IPv4) ([]byte, error) {
 	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{}
+	opts := gopacket.SerializeOptions{ComputeChecksums: true}
 	payload := gopacket.Payload(datagram.Payload)
 	if err := gopacket.SerializeLayers(buf, opts, datagram, payload); err != nil {
 		return nil, fmt.Errorf("error serializing network layer: %w", err)

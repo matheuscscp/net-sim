@@ -9,7 +9,6 @@ import (
 
 	"github.com/matheuscscp/net-sim/layers/network"
 
-	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +20,7 @@ func AssertDatagram(
 	src, dst net.IP,
 	payload []byte,
 ) {
-	expected := &gplayers.IPv4{
+	expectedBuf, err := network.SerializeDatagram(&gplayers.IPv4{
 		BaseLayer: gplayers.BaseLayer{
 			Payload: payload,
 		},
@@ -30,14 +29,10 @@ func AssertDatagram(
 		Version: 4,
 		IHL:     5,
 		Length:  uint16(len(payload)) + 20,
-	}
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{}
-	require.NoError(t, expected.SerializeTo(buf, opts))
-	expected = gopacket.
-		NewPacket(buf.Bytes(), gplayers.LayerTypeIPv4, gopacket.Lazy).
-		NetworkLayer().(*gplayers.IPv4)
-	expected.Payload = payload
+	})
+	require.NoError(t, err)
+	expected, err := network.DeserializeDatagram(expectedBuf)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
