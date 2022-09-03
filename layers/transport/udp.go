@@ -19,10 +19,10 @@ import (
 type (
 	// UDPListener implements net.Listener for UDP.
 	UDPListener struct {
-		networkLayer      network.Layer
-		transportLayerCtx context.Context
-		port              gplayers.UDPPort
-		ipAddress         *gopacket.Endpoint
+		ctx          context.Context
+		networkLayer network.Layer
+		port         gplayers.UDPPort
+		ipAddress    *gopacket.Endpoint
 
 		connsMu             sync.Mutex
 		conns, pendingConns map[udpAddr]*UDPConn
@@ -99,12 +99,12 @@ func (u *udp) listen(address string) (*UDPListener, error) {
 	}
 
 	l := &UDPListener{
-		networkLayer:      u.networkLayer,
-		transportLayerCtx: u.ctx,
-		port:              port,
-		ipAddress:         ipAddress,
-		conns:             make(map[udpAddr]*UDPConn),
-		pendingConns:      make(map[udpAddr]*UDPConn),
+		networkLayer: u.networkLayer,
+		ctx:          u.ctx,
+		port:         port,
+		ipAddress:    ipAddress,
+		conns:        make(map[udpAddr]*UDPConn),
+		pendingConns: make(map[udpAddr]*UDPConn),
 	}
 	l.connsCond = sync.NewCond(&l.connsMu)
 	u.listeners[port] = l
@@ -434,7 +434,7 @@ func (u *UDPConn) SetReadDeadline(d time.Time) error {
 		defer u.inCond.Broadcast() // notify blocked readers
 		timer := time.NewTimer(time.Until(d))
 		select {
-		case <-u.l.transportLayerCtx.Done():
+		case <-u.l.ctx.Done():
 			if !timer.Stop() {
 				select {
 				case <-timer.C:

@@ -1,0 +1,13 @@
+# start command: ./net-sim tcp-proxy forward config/tcp-forward-proxy.yml 1.1.1.2:80 127.0.0.1:8081
+
+defaultRouteInterface: eth0
+interfaces:
+- name: eth0
+  ipAddress: "1.1.1.2"
+  gateway: "1.1.1.1"
+  networkCIDR: 1.1.1.0/24
+  ethernetPort:
+    macAddress: 00:00:5e:01:53:aa
+    fullDuplexUnreliableWire:
+      recvUDPEndpoint: 127.0.0.1:50101
+      sendUDPEndpoint: 127.0.0.1:50001

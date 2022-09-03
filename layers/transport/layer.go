@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/matheuscscp/net-sim/layers/network"
@@ -64,12 +65,16 @@ type (
 	}
 )
 
+const (
+	useOfClosedConn = "use of closed network connection"
+)
+
 var (
 	ErrInvalidNetwork       = errors.New("invalid network")
 	ErrPortAlreadyInUse     = errors.New("port already in use")
 	ErrAllPortsAlreadyInUse = errors.New("all ports already in use")
-	ErrListenerClosed       = errors.New("listener closed (os error msg: use of closed network connection)")
-	ErrConnClosed           = errors.New("connection closed")
+	ErrListenerClosed       = fmt.Errorf("listener closed (os error msg: %s)", useOfClosedConn)
+	ErrConnClosed           = fmt.Errorf("connection closed (os error msg: %s)", useOfClosedConn)
 	ErrTimeout              = errors.New("timeout")
 )
 
@@ -159,6 +164,12 @@ func (l *layer) Close() error {
 	}
 
 	return nil
+}
+
+// IsUseOfClosedConn tells whether the error is due to the port/connection
+// being closed.
+func IsUseOfClosedConn(err error) bool {
+	return strings.Contains(err.Error(), useOfClosedConn)
 }
 
 func parseHostPort(address string, needIP bool) (int, *gopacket.Endpoint, error) {
