@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/matheuscscp/net-sim/layers/network"
@@ -98,6 +97,16 @@ func tcpProxy(args []string, reverse bool) error {
 	}
 
 	// start threads
+	type (
+		pureWriter struct{ io.Writer }
+		pureReader struct{ io.Reader }
+	)
+	copyConn := func(dst, src net.Conn) error {
+		if _, err := io.Copy(&pureWriter{dst}, &pureReader{src}); err != nil && !transport.IsUseOfClosedConn(err) {
+			return err
+		}
+		return nil
+	}
 	var wg sync.WaitGroup
 	for i, lis := range listeners {
 		i := i * 2
@@ -117,7 +126,7 @@ func tcpProxy(args []string, reverse bool) error {
 				// accept conn on host address
 				client, err := lis.Accept()
 				if err != nil {
-					if !strings.Contains(err.Error(), "use of closed network connection") {
+					if !transport.IsUseOfClosedConn(err) {
 						l.
 							WithError(err).
 							Errorf("error accepting client connection on %s network", hostLabel)
@@ -156,25 +165,29 @@ func tcpProxy(args []string, reverse bool) error {
 					// client -> server
 					wg3.Add(1)
 					go func() {
-						defer wg3.Done()
-						if _, err := io.Copy(server, client); err != nil {
+						defer func() {
+							server.Close()
+							wg3.Done()
+						}()
+						if err := copyConn(server, client); err != nil {
 							l.
 								WithError(err).
 								Errorf("error copying from client to server (from %s to %s)", hostLabel, overlayLabel)
 						}
-						server.Close()
 					}()
 
 					// server -> client
 					wg3.Add(1)
 					go func() {
-						defer wg3.Done()
-						if _, err := io.Copy(client, server); err != nil {
+						defer func() {
+							client.Close()
+							wg3.Done()
+						}()
+						if err := copyConn(client, server); err != nil {
 							l.
 								WithError(err).
 								Errorf("error copying from server to client (from %s to %s)", overlayLabel, hostLabel)
 						}
-						client.Close()
 					}()
 				}()
 			}
