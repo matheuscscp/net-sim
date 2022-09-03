@@ -49,7 +49,7 @@ var routerCmd = &cobra.Command{
 		// create transport layer
 		transportLayer := transport.NewLayer(networkLayer)
 
-		// TODO: run application layer servers (DNS, DHCP, BGP, NAT)
+		// TODO: run application layer servers (DHCP, DNS, ICMP, NAT, BGP)
 
 		// wait for ctx and close
 		<-ctx.Done()

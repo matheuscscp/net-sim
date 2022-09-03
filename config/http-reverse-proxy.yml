@@ -1,0 +1,15 @@
+# start command: ./net-sim http-proxy reverse config/http-reverse-proxy.yml \
+#   127.0.0.1:8080 google.com 1.1.1.2:80 \
+#   127.0.0.1:8080 matheuspimenta.com 1.1.1.2:80
+
+defaultRouteInterface: eth0
+interfaces:
+- name: eth0
+  ipAddress: "1.1.1.1"
+  gateway: "1.1.1.1"
+  networkCIDR: 1.1.1.0/24
+  ethernetPort:
+    macAddress: 00:00:5e:00:53:aa
+    fullDuplexUnreliableWire:
+      recvUDPEndpoint: 127.0.0.1:50001
+      sendUDPEndpoint: 127.0.0.1:50101

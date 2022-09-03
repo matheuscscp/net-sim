@@ -20,12 +20,12 @@ import (
 var (
 	tcpProxyCmd = &cobra.Command{
 		Use:   "tcp-proxy",
-		Short: "Proxy TCP connections between the host network and the overlay netowrk",
+		Short: "Proxy TCP connections between the host network and the overlay network",
 	}
 
 	tcpProxyReverseCmd = &cobra.Command{
 		Use:   "reverse <overlay-network-yaml-config-file> <<host-addr> <overlay-addr>>...",
-		Short: "Proxy TCP connections from the host network to the overlay netowrk",
+		Short: "Proxy TCP connections from the host network to the overlay network",
 		Args:  cobra.MinimumNArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return tcpProxy(args, true /*reverse*/)
@@ -34,7 +34,7 @@ var (
 
 	tcpProxyForwardCmd = &cobra.Command{
 		Use:   "forward <overlay-network-yaml-config-file> <<overlay-addr> <host-addr>>...",
-		Short: "Proxy TCP connections from the overlay network to the host netowrk",
+		Short: "Proxy TCP connections from the overlay network to the host network",
 		Args:  cobra.MinimumNArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return tcpProxy(args, false /*reverse*/)
@@ -69,7 +69,7 @@ func tcpProxy(args []string, reverse bool) error {
 	}
 	overlayTransport := transport.NewLayer(overlayNetwork)
 
-	// check proxy mode
+	// swap networks for forward proxy mode
 	hostLabel, overlayLabel := "host", "overlay"
 	hostAddrLabel, overlayAddrLabel := fmt.Sprintf("%s_addr", hostLabel), fmt.Sprintf("%s_addr", overlayLabel)
 	if !reverse { // forward
@@ -80,7 +80,7 @@ func tcpProxy(args []string, reverse bool) error {
 
 	// create host listeners (bind host addrs)
 	addrs := args[1:]
-	if len(addrs)%2 == 1 {
+	if len(addrs)%2 != 0 {
 		return errors.New("number of specified addresses is not even")
 	}
 	listeners := make([]net.Listener, 0, len(addrs)/2)
@@ -96,7 +96,7 @@ func tcpProxy(args []string, reverse bool) error {
 		listeners = append(listeners, l)
 	}
 
-	// start threads
+	// start proxy threads
 	type (
 		pureWriter struct{ io.Writer }
 		pureReader struct{ io.Reader }
