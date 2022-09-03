@@ -27,7 +27,7 @@ var (
 				NetworkCIDR: "1.1.1.0/24",
 				Card: link.EthernetPortConfig{
 					MACAddress: "00:00:5e:00:53:aa",
-					Medium: physical.FullDuplexUnreliablePortConfig{
+					Medium: physical.FullDuplexUnreliableWireConfig{
 						RecvUDPEndpoint: ":50081",
 						SendUDPEndpoint: ":50181",
 					},
@@ -44,7 +44,7 @@ var (
 		NetworkCIDR:    "1.1.1.0/24",
 		Card: link.EthernetPortConfig{
 			MACAddress: "00:00:5e:01:53:aa",
-			Medium: physical.FullDuplexUnreliablePortConfig{
+			Medium: physical.FullDuplexUnreliableWireConfig{
 				RecvUDPEndpoint: ":50181",
 				SendUDPEndpoint: ":50081",
 			},

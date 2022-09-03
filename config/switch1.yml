@@ -1,13 +1,13 @@
 ethernetPorts:
 - macAddress: 00:00:5e:00:53:aa
-  fullDuplexUnreliablePort:
+  fullDuplexUnreliableWire:
     recvUDPEndpoint: :50001
     sendUDPEndpoint: :50101
 - macAddress: 00:00:5e:00:53:ab
-  fullDuplexUnreliablePort:
+  fullDuplexUnreliableWire:
     recvUDPEndpoint: :50002
     sendUDPEndpoint: :50102
 - macAddress: 00:00:5e:00:53:ac
-  fullDuplexUnreliablePort:
+  fullDuplexUnreliableWire:
     recvUDPEndpoint: :50003
     sendUDPEndpoint: :50103

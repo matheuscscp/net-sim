@@ -19,8 +19,8 @@ import (
 )
 
 type (
-	// EthernetPort represents a hypothetical ethernet network interface
-	// card, composed by a physical port and a MAC address.
+	// EthernetPort represents a hypothetical Ethernet network interface
+	// card, composed by a physical wire and a MAC address.
 	//
 	// When sending a frame out it goes with the MAC address of the
 	// port as its src MAC address, unless if running on "forwarding
@@ -44,14 +44,14 @@ type (
 		ForwardingMode bool   `yaml:"forwardingMode"`
 		MACAddress     string `yaml:"macAddress"`
 
-		Medium physical.FullDuplexUnreliablePortConfig `yaml:"fullDuplexUnreliablePort"`
+		Medium physical.FullDuplexUnreliableWireConfig `yaml:"fullDuplexUnreliableWire"`
 	}
 
 	ethernetPort struct {
 		conf       *EthernetPortConfig
 		l          logrus.FieldLogger
 		macAddress gopacket.Endpoint
-		medium     physical.FullDuplexUnreliablePort
+		medium     physical.FullDuplexUnreliableWire
 		out        chan *outFrame
 		in         chan *gplayers.Ethernet
 		cancelCtx  context.CancelFunc
@@ -71,7 +71,7 @@ func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort
 	if err != nil {
 		return nil, fmt.Errorf("error parsing mac address: %w", err)
 	}
-	medium, err := physical.NewFullDuplexUnreliablePort(ctx, conf.Medium)
+	medium, err := physical.NewFullDuplexUnreliableWire(ctx, conf.Medium)
 	if err != nil {
 		return nil, fmt.Errorf("error creating medium: %w", err)
 	}
