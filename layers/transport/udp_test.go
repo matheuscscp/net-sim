@@ -10,13 +10,14 @@ import (
 	"github.com/matheuscscp/net-sim/layers/transport"
 	"github.com/matheuscscp/net-sim/test"
 
+	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestUDPClientServer(t *testing.T) {
-	sentSegments := make(chan *gplayers.UDP, 1)
+	sentSegments := make(chan gopacket.TransportLayer, 1)
 	recvdDatagrams := make(chan *gplayers.IPv4, 1)
 	networkLayer := test.NewMockNetworkLayer(t, sentSegments, recvdDatagrams)
 	transportLayer := transport.NewLayer(networkLayer)
@@ -43,18 +44,26 @@ func TestUDPClientServer(t *testing.T) {
 	test.AssertUDPSegment(
 		t,
 		sentSegments,
-		65535, // src
-		123,   // dst
+		65535,                    // srcPort
+		123,                      // dstPort
+		net.ParseIP("127.0.0.1"), // srcIPAddress
+		net.ParseIP("127.0.0.1"), // dstIPAddress
 		helloPayload,
 	)
-	test.RecvUDPSegment(t, recvdDatagrams, &gplayers.UDP{
-		BaseLayer: gplayers.BaseLayer{
-			Payload: helloPayload,
+	test.RecvUDPSegment(
+		t,
+		recvdDatagrams,
+		&gplayers.UDP{
+			BaseLayer: gplayers.BaseLayer{
+				Payload: helloPayload,
+			},
+			SrcPort: 65535,
+			DstPort: 123,
 		},
-		SrcPort: 65535,
-		DstPort: 123,
-		// the server accepts any src/dst IP address
-	}, nil /*srcIPAddress*/, nil /*dstIPAddress*/)
+		// the server accepts any dst IP address
+		net.ParseIP("127.0.0.1"), // srcIPAddress
+		net.ParseIP("99.0.0.1"),  // dstIPAddress
+	)
 	serverConn, err := server.Accept()
 	require.NoError(t, err)
 	require.NotNil(t, serverConn)
@@ -71,18 +80,27 @@ func TestUDPClientServer(t *testing.T) {
 	test.AssertUDPSegment(
 		t,
 		sentSegments,
-		123,   // src
-		65535, // dst
+		123,                      // srcPort
+		65535,                    // dstPort
+		net.ParseIP("127.0.0.1"), // srcIPAddress
+		net.ParseIP("127.0.0.1"), // dstIPAddress
 		helloPayload,
 	)
-	test.RecvUDPSegment(t, recvdDatagrams, &gplayers.UDP{
-		BaseLayer: gplayers.BaseLayer{
-			Payload: helloPayload,
+	test.RecvUDPSegment(
+		t,
+		recvdDatagrams,
+		&gplayers.UDP{
+			BaseLayer: gplayers.BaseLayer{
+				Payload: helloPayload,
+			},
+			SrcPort: 123,
+			DstPort: 65535,
 		},
-		SrcPort: 123,
-		DstPort: 65535,
-		// the client only accepts the dialed IP address as src IP address
-	}, net.ParseIP("127.0.0.1") /*srcIPAddress*/, nil /*dstIPAddress*/)
+		// the client only accepts the dialed IP address as src IP address,
+		// but accepts any dst IP address
+		net.ParseIP("127.0.0.1"), // srcIPAddress
+		net.ParseIP("99.0.0.1"),  // dstIPAddress
+	)
 	require.NoError(t, client.SetReadDeadline(time.Now().Add(10*time.Millisecond)))
 	n, err = client.Read(readBuf)
 	require.NoError(t, err)
@@ -90,14 +108,20 @@ func TestUDPClientServer(t *testing.T) {
 
 	// wrong src IP address on server -> client will be dropped, so we test
 	// with a timeout
-	test.RecvUDPSegment(t, recvdDatagrams, &gplayers.UDP{
-		BaseLayer: gplayers.BaseLayer{
-			Payload: helloPayload,
+	test.RecvUDPSegment(
+		t,
+		recvdDatagrams,
+		&gplayers.UDP{
+			BaseLayer: gplayers.BaseLayer{
+				Payload: helloPayload,
+			},
+			SrcPort: 123,
+			DstPort: 65535,
 		},
-		SrcPort: 123,
-		DstPort: 65535,
 		// the client only accepts the dialed IP address as src IP address
-	}, net.ParseIP("99.0.0.1") /*srcIPAddress*/, nil /*dstIPAddress*/)
+		net.ParseIP("99.0.0.1"),  // srcIPAddress
+		net.ParseIP("127.0.0.1"), // dstIPAddress
+	)
 	require.NoError(t, client.SetReadDeadline(time.Now().Add(10*time.Millisecond)))
 	n, err = client.Read(readBuf)
 	assert.Error(t, err)
@@ -110,7 +134,7 @@ func TestUDPClientServer(t *testing.T) {
 }
 
 func TestUDPLocalServer(t *testing.T) {
-	sentSegments := make(chan *gplayers.UDP, 1)
+	sentSegments := make(chan gopacket.TransportLayer, 1)
 	recvdDatagrams := make(chan *gplayers.IPv4, 1)
 	networkLayer := test.NewMockNetworkLayer(t, sentSegments, recvdDatagrams)
 	transportLayer := transport.NewLayer(networkLayer)
@@ -134,39 +158,57 @@ func TestUDPLocalServer(t *testing.T) {
 	// it before a valid packet, proving that it was discarded because only
 	// the valid packet generated a pending connection
 	helloWrongIP := []byte("hello wrong IP")
-	test.RecvUDPSegment(t, recvdDatagrams, &gplayers.UDP{
-		BaseLayer: gplayers.BaseLayer{
-			Payload: helloWrongIP,
+	test.RecvUDPSegment(
+		t,
+		recvdDatagrams,
+		&gplayers.UDP{
+			BaseLayer: gplayers.BaseLayer{
+				Payload: helloWrongIP,
+			},
+			SrcPort: 65535,
+			DstPort: 123,
 		},
-		SrcPort: 65535,
-		DstPort: 123,
 		// the server only accepts loopback as the dst IP address
-	}, nil /*srcIPAddress*/, net.ParseIP("99.0.0.1") /*dstIPAddress*/)
+		net.ParseIP("127.0.0.1"), // srcIPAddress
+		net.ParseIP("99.0.0.1"),  // dstIPAddress
+	)
 
 	// we also take the opportunity to prove that a segment with correct
 	// dst IP address but wrong dst port is also discarded, and let the
 	// Accept() call below fetch the only valid connection from a client
 	// to the "local" server
 	helloWrongPort := []byte("hello wrong port")
-	test.RecvUDPSegment(t, recvdDatagrams, &gplayers.UDP{
-		BaseLayer: gplayers.BaseLayer{
-			Payload: helloWrongPort,
+	test.RecvUDPSegment(
+		t,
+		recvdDatagrams,
+		&gplayers.UDP{
+			BaseLayer: gplayers.BaseLayer{
+				Payload: helloWrongPort,
+			},
+			SrcPort: 65535,
+			DstPort: 321,
 		},
-		SrcPort: 65535,
-		DstPort: 321,
 		// the server only accepts loopback as the dst IP address
-	}, nil /*srcIPAddress*/, net.ParseIP("127.0.0.1") /*dstIPAddress*/)
+		net.ParseIP("127.0.0.1"), // srcIPAddress
+		net.ParseIP("127.0.0.1"), // dstIPAddress
+	)
 
 	// correct dst port and IP address
 	helloPayload := []byte("hello world")
-	test.RecvUDPSegment(t, recvdDatagrams, &gplayers.UDP{
-		BaseLayer: gplayers.BaseLayer{
-			Payload: helloPayload,
+	test.RecvUDPSegment(
+		t,
+		recvdDatagrams,
+		&gplayers.UDP{
+			BaseLayer: gplayers.BaseLayer{
+				Payload: helloPayload,
+			},
+			SrcPort: 65535,
+			DstPort: 123,
 		},
-		SrcPort: 65535,
-		DstPort: 123,
 		// the server only accepts loopback as the dst IP address
-	}, nil /*srcIPAddress*/, net.ParseIP("127.0.0.1") /*dstIPAddress*/)
+		net.ParseIP("127.0.0.1"), // srcIPAddress
+		net.ParseIP("127.0.0.1"), // dstIPAddress
+	)
 	serverConn, err := server.Accept()
 	require.NoError(t, err)
 	require.NotNil(t, serverConn)
@@ -181,14 +223,20 @@ func TestUDPLocalServer(t *testing.T) {
 	// new connections are dropped
 	require.NoError(t, serverConn.Close())
 	require.NoError(t, server.Close())
-	test.RecvUDPSegment(t, recvdDatagrams, &gplayers.UDP{
-		BaseLayer: gplayers.BaseLayer{
-			Payload: helloPayload,
+	test.RecvUDPSegment(
+		t,
+		recvdDatagrams,
+		&gplayers.UDP{
+			BaseLayer: gplayers.BaseLayer{
+				Payload: helloPayload,
+			},
+			SrcPort: 65535,
+			DstPort: 123,
 		},
-		SrcPort: 65535,
-		DstPort: 123,
 		// the server only accepts loopback as the dst IP address
-	}, nil /*srcIPAddress*/, net.ParseIP("127.0.0.1") /*dstIPAddress*/)
+		net.ParseIP("127.0.0.1"), // srcIPAddress
+		net.ParseIP("127.0.0.1"), // dstIPAddress
+	)
 	serverConn, err = server.Accept()
 	assert.Error(t, err)
 	assert.Equal(t, transport.ErrListenerClosed, err)

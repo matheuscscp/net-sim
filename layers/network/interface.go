@@ -36,6 +36,13 @@ type (
 	// query is sent to resolve the MAC address of the gateway instead.
 	Interface interface {
 		Send(ctx context.Context, datagram *gplayers.IPv4) error
+		// SendTransportSegment is a hack for the TCP/UDP checksums to be
+		// computed by gopacket during serialization.
+		SendTransportSegment(
+			ctx context.Context,
+			datagramHeader *gplayers.IPv4,
+			segment gopacket.TransportLayer,
+		) error
 		Recv() <-chan *gplayers.IPv4
 		Close() error
 		ForwardingMode() bool
@@ -85,7 +92,8 @@ type (
 )
 
 var (
-	errNoL2Route = errors.New("no L2 route")
+	errNoL2Route       = errors.New("no L2 route")
+	errPayloadTooLarge = fmt.Errorf("payload is larger than network layer MTU (%d)", MTU)
 )
 
 // NewInterface creates an Interface from config.
@@ -159,22 +167,47 @@ func (i *interfaceImpl) startThreads() {
 }
 
 func (i *interfaceImpl) Send(ctx context.Context, datagram *gplayers.IPv4) error {
-	// validate and set fields
-	if err := ValidateDatagramAndSetDefaultFields(datagram); err != nil {
-		return err
+	if len(datagram.Payload) == 0 {
+		return common.ErrCannotSendEmpty
 	}
-	if !i.ForwardingMode() {
-		datagram.SrcIP = i.ipAddress.Raw()
-	}
-
-	// serialize datagram
+	i.setDatagramHeaderFields(datagram)
 	buf, err := SerializeDatagram(datagram)
 	if err != nil {
 		return err
 	}
+	return i.sendOrDelay(ctx, datagram, buf)
+}
+
+func (i *interfaceImpl) SendTransportSegment(
+	ctx context.Context,
+	datagramHeader *gplayers.IPv4,
+	segment gopacket.TransportLayer,
+) error {
+	i.setDatagramHeaderFields(datagramHeader)
+	buf, err := SerializeDatagramWithTransportSegment(datagramHeader, segment)
+	if err != nil {
+		return err
+	}
+	return i.sendOrDelay(ctx, datagramHeader, buf)
+}
+
+func (i *interfaceImpl) setDatagramHeaderFields(datagramHeader *gplayers.IPv4) {
+	if !i.ForwardingMode() {
+		datagramHeader.SrcIP = i.ipAddress.Raw()
+	}
+}
+
+func (i *interfaceImpl) sendOrDelay(
+	ctx context.Context,
+	datagramHeader *gplayers.IPv4,
+	buf []byte,
+) error {
+	if len(buf)-HeaderLength > MTU {
+		return errPayloadTooLarge
+	}
 
 	// calculate L2 endpoint
-	dstIPAddress := gplayers.NewIPEndpoint(datagram.DstIP)
+	dstIPAddress := gplayers.NewIPEndpoint(datagramHeader.DstIP)
 	arpDstIPAddress := dstIPAddress
 	if !i.network.Contains(dstIPAddress.Raw()) {
 		arpDstIPAddress = i.gateway
@@ -182,7 +215,8 @@ func (i *interfaceImpl) Send(ctx context.Context, datagram *gplayers.IPv4) error
 
 	// send
 	outDatagram := &outDatagram{ctx, buf, dstIPAddress, arpDstIPAddress}
-	if err = i.send(outDatagram); err == nil {
+	err := i.send(outDatagram)
+	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, errNoL2Route) {
@@ -500,21 +534,4 @@ func (i *interfaceImpl) BroadcastIPAddress() gopacket.Endpoint {
 
 func (i *interfaceImpl) Card() link.EthernetPort {
 	return i.card
-}
-
-func ValidateDatagramAndSetDefaultFields(datagram *gplayers.IPv4) error {
-	// validate payload size
-	if len(datagram.Payload) == 0 {
-		return common.ErrCannotSendEmpty
-	}
-	if len(datagram.Payload) > MTU {
-		return fmt.Errorf("payload is larger than network layer MTU (%d)", MTU)
-	}
-
-	// set fixed fields
-	datagram.Version = Version
-	datagram.IHL = IHL
-	datagram.Length = uint16(len(datagram.Payload)) + HeaderLength
-
-	return nil
 }
