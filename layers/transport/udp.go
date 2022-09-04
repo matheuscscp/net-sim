@@ -136,7 +136,7 @@ func (u *udp) dial(ctx context.Context, address string) (*UDPConn, error) {
 
 func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
 	// decap
-	segment, err := DeserializeUDPSegment(datagram.Payload)
+	segment, err := DeserializeUDPSegment(datagram)
 	if err != nil {
 		logrus.
 			WithError(err).
@@ -351,28 +351,27 @@ func (u *UDPConn) Write(b []byte) (n int, err error) {
 		return 0, fmt.Errorf("payload is larger than transport layer UDP MTU (%d)", UDPMTU)
 	}
 
-	// serialize UDP segment
-	datagramPayload, err := SerializeUDPSegment(&gplayers.UDP{
+	// send
+	datagramHeader := &gplayers.IPv4{
+		DstIP:    u.remoteAddr.ipAddress.Raw(),
+		Protocol: gplayers.IPProtocolUDP,
+	}
+	segment := &gplayers.UDP{
 		BaseLayer: gplayers.BaseLayer{
 			Payload: b,
 		},
 		SrcPort: u.l.port,
 		DstPort: u.remoteAddr.port,
 		Length:  uint16(len(b) + UDPHeaderLength),
-	})
-	if err != nil {
-		return 0, err
 	}
-
-	// send
-	err = u.l.networkLayer.Send(context.Background(), &gplayers.IPv4{
-		BaseLayer: gplayers.BaseLayer{
-			Payload: datagramPayload,
-		},
-		DstIP:    u.remoteAddr.ipAddress.Raw(),
-		Protocol: gplayers.IPProtocolUDP,
-	})
+	if u.l.ipAddress != nil {
+		datagramHeader.SrcIP = u.l.ipAddress.Raw()
+	}
+	intf, err := u.l.networkLayer.FindInterfaceForHeader(datagramHeader)
 	if err != nil {
+		return 0, fmt.Errorf("error finding interface for datagram header: %w", err)
+	}
+	if err := intf.SendTransportSegment(context.Background(), datagramHeader, segment); err != nil {
 		return 0, fmt.Errorf("error sending IP datagram: %w", err)
 	}
 
@@ -461,21 +460,31 @@ func (u *udpAddr) String() string {
 	return fmt.Sprintf("%s:%d", u.ipAddress, u.port)
 }
 
-func SerializeUDPSegment(segment *gplayers.UDP) ([]byte, error) {
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{}
-	payload := gopacket.Payload(segment.Payload)
-	if err := gopacket.SerializeLayers(buf, opts, segment, payload); err != nil {
-		return nil, fmt.Errorf("error serializing transport layer: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
-func DeserializeUDPSegment(buf []byte) (*gplayers.UDP, error) {
-	pkt := gopacket.NewPacket(buf, gplayers.LayerTypeUDP, gopacket.Lazy)
+func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
+	// deserialize
+	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeUDP, gopacket.Lazy)
 	segment := pkt.TransportLayer().(*gplayers.UDP)
 	if segment == nil || len(segment.Payload) == 0 {
 		return nil, fmt.Errorf("error deserializing transport layer: %w", pkt.ErrorLayer().Error())
 	}
+
+	// validate checksum
+	checksum := segment.Checksum
+	if err := segment.SetNetworkLayerForChecksum(datagram); err != nil {
+		return nil, fmt.Errorf("error setting network layer for checksum: %w", err)
+	}
+	err := gopacket.SerializeLayers(
+		gopacket.NewSerializeBuffer(),
+		gopacket.SerializeOptions{ComputeChecksums: true},
+		segment,
+		gopacket.Payload(segment.Payload),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error calculating checksum (reserializing): %w", err)
+	}
+	if segment.Checksum != checksum {
+		return nil, fmt.Errorf("checksums differ. want %d, got %d", segment.Checksum, checksum)
+	}
+
 	return segment, nil
 }

@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/matheuscscp/net-sim/layers/common"
 	"github.com/matheuscscp/net-sim/layers/link"
 
 	"github.com/google/gopacket"
@@ -40,6 +41,7 @@ type (
 	// times for any given Layer instance.
 	Layer interface {
 		Send(ctx context.Context, datagram *gplayers.IPv4) error
+		FindInterfaceForHeader(datagramHeader *gplayers.IPv4) (Interface, error)
 		ForwardingMode() bool
 		ForwardingTable() *ForwardingTable
 		Interfaces() []Interface
@@ -153,29 +155,37 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 }
 
 func (l *layer) Send(ctx context.Context, datagram *gplayers.IPv4) error {
-	if datagram.SrcIP == nil {
-		return l.findRouteAndSend(ctx, datagram)
-	}
-
-	// find interface matching datagram.SrcIP
-	srcIPAddress := gplayers.NewIPEndpoint(datagram.SrcIP)
-	intf, ok := l.ipMap[srcIPAddress]
-	if !ok {
-		return fmt.Errorf("specified src IP Address does not match any of the network interfaces: %s", datagram.SrcIP)
+	intf, err := l.FindInterfaceForHeader(datagram)
+	if err != nil {
+		return err
 	}
 	return intf.Send(ctx, datagram)
 }
 
-func (l *layer) findRouteAndSend(ctx context.Context, datagram *gplayers.IPv4) error {
-	intfName, ok := l.forwardingTable.FindRoute(datagram.DstIP)
+func (l *layer) FindInterfaceForHeader(datagramHeader *gplayers.IPv4) (Interface, error) {
+	if datagramHeader.SrcIP == nil {
+		return l.findInterfaceForDstIPAddress(datagramHeader.DstIP)
+	}
+
+	// find interface matching datagramHeader.SrcIP
+	srcIPAddress := gplayers.NewIPEndpoint(datagramHeader.SrcIP)
+	intf, ok := l.ipMap[srcIPAddress]
 	if !ok {
-		return errNoL3Route
+		return nil, fmt.Errorf("specified src IP address does not match any of the network interfaces: %s", datagramHeader.SrcIP)
+	}
+	return intf, nil
+}
+
+func (l *layer) findInterfaceForDstIPAddress(dstIPAddress net.IP) (Interface, error) {
+	intfName, ok := l.forwardingTable.FindRoute(dstIPAddress)
+	if !ok {
+		return nil, errNoL3Route
 	}
 	intf, ok := l.intfMap[intfName]
 	if !ok {
-		return fmt.Errorf("the interface %s chosen by indexing the forwarding table with the dst IP address %s does not exist", intfName, datagram.DstIP)
+		return nil, fmt.Errorf("the interface %s chosen by indexing the forwarding table with the dst IP address %s does not exist", intfName, dstIPAddress)
 	}
-	return intf.Send(ctx, datagram)
+	return intf, nil
 }
 
 func (l *layer) ForwardingMode() bool {
@@ -225,7 +235,14 @@ func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv
 					// if the dst IP address does not match the IP address or the broadcast
 					// IP address of any interface, then the interfaces are necessarily
 					// running in forwarding mode. forward the datagram
-					if err := l.findRouteAndSend(ctx, datagram); err != nil && !errors.Is(err, errNoL3Route) {
+					dstIntf, err := l.findInterfaceForDstIPAddress(datagram.DstIP)
+					if err == nil {
+						err = dstIntf.Send(ctx, datagram)
+						if err == nil {
+							continue
+						}
+					}
+					if err != nil && !errors.Is(err, errNoL3Route) {
 						logrus.
 							WithError(err).
 							WithField("from_interface", intf.Name()).
@@ -249,22 +266,42 @@ func (l *layer) Close() error {
 }
 
 func (l *loopbackIntf) Send(ctx context.Context, datagram *gplayers.IPv4) error {
-	// validate and set fields
-	if err := ValidateDatagramAndSetDefaultFields(datagram); err != nil {
-		return err
+	if len(datagram.Payload) == 0 {
+		return common.ErrCannotSendEmpty
 	}
-	loIPAddr := LoopbackIPAddress()
-	datagram.SrcIP = loIPAddr
-	datagram.DstIP = loIPAddr
-
-	// serialize and deserialize datagram (one more level of
-	// validation and also helps the tests by setting the
-	// .BaseLayer.Contents field consistently)
-	b, err := SerializeDatagram(datagram)
+	l.setDatagramHeaderFields(datagram)
+	buf, err := SerializeDatagram(datagram)
 	if err != nil {
 		return err
 	}
-	datagram, err = DeserializeDatagram(b)
+	return l.send(buf)
+}
+
+func (l *loopbackIntf) SendTransportSegment(
+	ctx context.Context,
+	datagramHeader *gplayers.IPv4,
+	segment gopacket.TransportLayer,
+) error {
+	l.setDatagramHeaderFields(datagramHeader)
+	buf, err := SerializeDatagramWithTransportSegment(datagramHeader, segment)
+	if err != nil {
+		return err
+	}
+	return l.send(buf)
+}
+
+func (l *loopbackIntf) setDatagramHeaderFields(datagramHeader *gplayers.IPv4) {
+	loIPAddr := LoopbackIPAddress()
+	datagramHeader.SrcIP = loIPAddr
+	datagramHeader.DstIP = loIPAddr
+}
+
+func (l *loopbackIntf) send(buf []byte) error {
+	if len(buf)-HeaderLength > MTU {
+		return errPayloadTooLarge
+	}
+
+	datagram, err := DeserializeDatagram(buf)
 	if err != nil {
 		return err
 	}
