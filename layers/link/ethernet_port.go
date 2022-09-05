@@ -168,7 +168,7 @@ func (e *ethernetPort) Send(ctx context.Context, frame *gplayers.Ethernet) error
 	}
 
 	// serialize crc32 checksum
-	crc := crc32.Checksum(buf.Bytes(), crc32.MakeTable(crc32.Castagnoli))
+	crc := crc32.Checksum(buf.Bytes(), crc32.MakeTable(crc32.IEEE))
 	b := make([]byte, ChecksumLength)
 	binary.LittleEndian.PutUint32(b, crc)
 	finalBuf := append(buf.Bytes(), b...)
@@ -194,7 +194,7 @@ func (e *ethernetPort) decap(frameBuf []byte) {
 		frameData, crcBuf := frameBuf[:siz], frameBuf[siz:]
 
 		// validate crc
-		crc := crc32.Checksum(frameData, crc32.MakeTable(crc32.Castagnoli))
+		crc := crc32.Checksum(frameData, crc32.MakeTable(crc32.IEEE))
 		expectedCrc := binary.LittleEndian.Uint32(crcBuf)
 		if crc != expectedCrc {
 			return fmt.Errorf("crc32.Castagnoli integrity check failed, want %x, got %x", expectedCrc, crc)
