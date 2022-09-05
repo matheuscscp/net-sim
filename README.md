@@ -18,7 +18,7 @@ I've always wanted to write some code that simulates networking devices/agents/a
 * [X] Application Layer: Reverse and forward TCP proxy
 * [X] Application Layer: Reverse and forward HTTP proxy
 
-## Applications over UDP and hacks for solving problems of the Network Layer
+## Applications and hacks solving problems of the Network Layer
 
 * [ ] DHCP
 * [ ] DNS
