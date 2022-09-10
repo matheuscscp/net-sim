@@ -25,14 +25,14 @@ type (
 		ipAddress    *gopacket.Endpoint
 
 		connsMu             sync.Mutex
-		conns, pendingConns map[udpAddr]*UDPConn
+		conns, pendingConns map[addr]*UDPConn
 		connsCond           *sync.Cond
 	}
 
 	// UDPConn implements net.Conn for UDP.
 	UDPConn struct {
 		l          *UDPListener
-		remoteAddr udpAddr
+		remoteAddr addr
 
 		inMu         sync.Mutex
 		inFront      *udpQueueElem
@@ -48,11 +48,6 @@ type (
 
 		listenersMu sync.RWMutex
 		listeners   map[uint16]*UDPListener
-	}
-
-	udpAddr struct {
-		port      uint16
-		ipAddress gopacket.Endpoint
 	}
 
 	udpQueueElem struct {
@@ -102,8 +97,8 @@ func (u *udp) listen(address string) (*UDPListener, error) {
 		ctx:          u.ctx,
 		port:         port,
 		ipAddress:    ipAddress,
-		conns:        make(map[udpAddr]*UDPConn),
-		pendingConns: make(map[udpAddr]*UDPConn),
+		conns:        make(map[addr]*UDPConn),
+		pendingConns: make(map[addr]*UDPConn),
 	}
 	l.connsCond = sync.NewCond(&l.connsMu)
 	u.listeners[port] = l
@@ -129,7 +124,7 @@ func (u *udp) dial(ctx context.Context, address string) (*UDPConn, error) {
 		return nil, fmt.Errorf("error closing local listener for other connections: %w", err)
 	}
 
-	return l.findOrCreateConn(udpAddr{port, *ipAddress}), nil
+	return l.findOrCreateConn(addr{port, *ipAddress}), nil
 }
 
 func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
@@ -157,7 +152,7 @@ func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
 
 	// demux
 	srcPort, srcIPAddress := uint16(segment.SrcPort), gplayers.NewIPEndpoint(datagram.SrcIP)
-	remoteAddr := udpAddr{srcPort, srcIPAddress}
+	remoteAddr := addr{srcPort, srcIPAddress}
 	if c := l.demux(remoteAddr); c != nil {
 		c.pushRead(segment.Payload)
 	}
@@ -208,7 +203,7 @@ func (u *UDPListener) Close() error {
 }
 
 func (u *UDPListener) Addr() net.Addr {
-	a := &udpAddr{port: u.port}
+	a := &addr{port: u.port}
 	if u.ipAddress != nil {
 		a.ipAddress = *u.ipAddress
 	}
@@ -222,10 +217,10 @@ func (u *UDPListener) Dial(address string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
-	return u.findOrCreateConn(udpAddr{port, *ipAddress}), nil
+	return u.findOrCreateConn(addr{port, *ipAddress}), nil
 }
 
-func (u *UDPListener) findOrCreateConn(remoteAddr udpAddr) *UDPConn {
+func (u *UDPListener) findOrCreateConn(remoteAddr addr) *UDPConn {
 	u.connsMu.Lock()
 	defer u.connsMu.Unlock()
 
@@ -237,7 +232,7 @@ func (u *UDPListener) findOrCreateConn(remoteAddr udpAddr) *UDPConn {
 	return c
 }
 
-func (u *UDPListener) demux(remoteAddr udpAddr) *UDPConn {
+func (u *UDPListener) demux(remoteAddr addr) *UDPConn {
 	u.connsMu.Lock()
 	defer u.connsMu.Unlock()
 
@@ -262,7 +257,7 @@ func (u *UDPListener) demux(remoteAddr udpAddr) *UDPConn {
 	return c
 }
 
-func newUDPConn(l *UDPListener, remoteAddr udpAddr) *UDPConn {
+func newUDPConn(l *UDPListener, remoteAddr addr) *UDPConn {
 	c := &UDPConn{
 		l:          l,
 		remoteAddr: remoteAddr,
@@ -447,14 +442,6 @@ func (u *UDPConn) SetReadDeadline(d time.Time) error {
 
 func (u *UDPConn) SetWriteDeadline(d time.Time) error {
 	return nil // no-op
-}
-
-func (u *udpAddr) Network() string {
-	return UDP
-}
-
-func (u *udpAddr) String() string {
-	return fmt.Sprintf("%s:%d", u.ipAddress, u.port)
 }
 
 func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {

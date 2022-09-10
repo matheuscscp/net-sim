@@ -63,6 +63,11 @@ type (
 		wg        sync.WaitGroup
 		giantBuf  chan *gplayers.IPv4
 	}
+
+	addr struct {
+		port      uint16
+		ipAddress gopacket.Endpoint
+	}
 )
 
 const (
@@ -164,6 +169,14 @@ func (l *layer) Close() error {
 	}
 
 	return nil
+}
+
+func (a *addr) Network() string {
+	return UDP
+}
+
+func (a *addr) String() string {
+	return fmt.Sprintf("%s:%d", a.ipAddress, a.port)
 }
 
 // IsUseOfClosedConn tells whether the error is due to the port/connection
