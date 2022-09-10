@@ -117,14 +117,14 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
-	c := l.findOrCreateConn(addr{port, *ipAddress})
+	c := l.findConnOrCreate(addr{port, *ipAddress})
 	if err := c.protocolHandshake(ctx); err != nil {
 		return nil, fmt.Errorf("error performing protocol handshake: %w", err)
 	}
 	return c, nil
 }
 
-func (l *listener) findOrCreateConn(remoteAddr addr) conn {
+func (l *listener) findConnOrCreate(remoteAddr addr) conn {
 	l.connsMu.Lock()
 	defer l.connsMu.Unlock()
 
@@ -136,7 +136,7 @@ func (l *listener) findOrCreateConn(remoteAddr addr) conn {
 	return c
 }
 
-func (l *listener) demux(remoteAddr addr) conn {
+func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	l.connsMu.Lock()
 	defer l.connsMu.Unlock()
 
