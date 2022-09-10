@@ -19,7 +19,7 @@ import (
 func AssertUDPSegment(
 	t *testing.T,
 	ch <-chan gopacket.TransportLayer,
-	srcPort, dstPort gplayers.UDPPort,
+	srcPort, dstPort uint16,
 	srcIPAddress, dstIPAddress net.IP,
 	payload []byte,
 ) {
@@ -31,8 +31,8 @@ func AssertUDPSegment(
 		BaseLayer: gplayers.BaseLayer{
 			Payload: payload,
 		},
-		SrcPort: srcPort,
-		DstPort: dstPort,
+		SrcPort: gplayers.UDPPort(srcPort),
+		DstPort: gplayers.UDPPort(dstPort),
 		Length:  uint16(len(payload)) + 8,
 	})
 	require.NoError(t, err)

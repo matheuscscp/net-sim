@@ -21,7 +21,7 @@ type (
 	UDPListener struct {
 		ctx          context.Context
 		networkLayer network.Layer
-		port         gplayers.UDPPort
+		port         uint16
 		ipAddress    *gopacket.Endpoint
 
 		connsMu             sync.Mutex
@@ -47,11 +47,11 @@ type (
 		networkLayer network.Layer
 
 		listenersMu sync.RWMutex
-		listeners   map[gplayers.UDPPort]*UDPListener
+		listeners   map[uint16]*UDPListener
 	}
 
 	udpAddr struct {
-		port      gplayers.UDPPort
+		port      uint16
 		ipAddress gopacket.Endpoint
 	}
 
@@ -66,24 +66,23 @@ func newUDP(ctx context.Context, networkLayer network.Layer) *udp {
 		ctx:          ctx,
 		networkLayer: networkLayer,
 
-		listeners: make(map[gplayers.UDPPort]*UDPListener),
+		listeners: make(map[uint16]*UDPListener),
 	}
 }
 
 func (u *udp) listen(address string) (*UDPListener, error) {
 	// parse address
-	intPort, ipAddress, err := parseHostPort(address, false /*needIP*/)
+	port, ipAddress, err := parseHostPort(address, false /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
-	port := gplayers.UDPPort(intPort)
 
 	u.listenersMu.Lock()
 	defer u.listenersMu.Unlock()
 
 	// if port is zero, choose a free port
 	if port == 0 {
-		for p := gplayers.UDPPort(65535); 1 <= p; p-- {
+		for p := uint16(65535); 1 <= p; p-- {
 			if _, ok := u.listeners[p]; !ok {
 				port = p
 				break
@@ -114,11 +113,10 @@ func (u *udp) listen(address string) (*UDPListener, error) {
 
 func (u *udp) dial(ctx context.Context, address string) (*UDPConn, error) {
 	// parse remote address
-	intPort, ipAddress, err := parseHostPort(address, true /*needIP*/)
+	port, ipAddress, err := parseHostPort(address, true /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
-	port := gplayers.UDPPort(intPort)
 
 	// allocate random port
 	l, err := u.listen(":0")
@@ -146,7 +144,7 @@ func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
 	}
 
 	// find listener
-	dstPort, dstIPAddress := segment.DstPort, gplayers.NewIPEndpoint(datagram.DstIP)
+	dstPort, dstIPAddress := uint16(segment.DstPort), gplayers.NewIPEndpoint(datagram.DstIP)
 	u.listenersMu.RLock()
 	l, ok := u.listeners[dstPort]
 	u.listenersMu.RUnlock()
@@ -158,7 +156,7 @@ func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
 	}
 
 	// demux
-	srcPort, srcIPAddress := segment.SrcPort, gplayers.NewIPEndpoint(datagram.SrcIP)
+	srcPort, srcIPAddress := uint16(segment.SrcPort), gplayers.NewIPEndpoint(datagram.SrcIP)
 	remoteAddr := udpAddr{srcPort, srcIPAddress}
 	if c := l.demux(remoteAddr); c != nil {
 		c.pushRead(segment.Payload)
@@ -220,11 +218,10 @@ func (u *UDPListener) Addr() net.Addr {
 // Dial returns a UDP net.Conn bound to the given address.
 // No network calls/handshakes are performed.
 func (u *UDPListener) Dial(address string) (net.Conn, error) {
-	intPort, ipAddress, err := parseHostPort(address, true /*needIP*/)
+	port, ipAddress, err := parseHostPort(address, true /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
-	port := gplayers.UDPPort(intPort)
 	return u.findOrCreateConn(udpAddr{port, *ipAddress}), nil
 }
 
@@ -360,8 +357,8 @@ func (u *UDPConn) Write(b []byte) (n int, err error) {
 		BaseLayer: gplayers.BaseLayer{
 			Payload: b,
 		},
-		SrcPort: u.l.port,
-		DstPort: u.remoteAddr.port,
+		SrcPort: gplayers.UDPPort(u.l.port),
+		DstPort: gplayers.UDPPort(u.remoteAddr.port),
 		Length:  uint16(len(b) + UDPHeaderLength),
 	}
 	if u.l.ipAddress != nil {
