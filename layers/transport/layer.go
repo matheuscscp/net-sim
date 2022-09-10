@@ -172,7 +172,7 @@ func IsUseOfClosedConn(err error) bool {
 	return strings.Contains(err.Error(), useOfClosedConn)
 }
 
-func parseHostPort(address string, needIP bool) (int, *gopacket.Endpoint, error) {
+func parseHostPort(address string, needIP bool) (uint16, *gopacket.Endpoint, error) {
 	host, p, err := net.SplitHostPort(address)
 	if err != nil {
 		return 0, nil, fmt.Errorf("error splitting in host:port: %w", err)
@@ -196,5 +196,5 @@ func parseHostPort(address string, needIP bool) (int, *gopacket.Endpoint, error)
 	if needIP && ipAddress == nil {
 		return 0, nil, errors.New("host cannot be empty")
 	}
-	return port, ipAddress, nil
+	return uint16(port), ipAddress, nil
 }
