@@ -13,7 +13,6 @@ import (
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/hashicorp/go-multierror"
-	"github.com/sirupsen/logrus"
 )
 
 type (
@@ -42,13 +41,7 @@ type (
 		closed       bool
 	}
 
-	udp struct {
-		ctx          context.Context
-		networkLayer network.Layer
-
-		listenersMu sync.RWMutex
-		listeners   map[uint16]*UDPListener
-	}
+	udp struct{}
 
 	udpQueueElem struct {
 		payload []byte
@@ -56,106 +49,63 @@ type (
 	}
 )
 
-func newUDP(ctx context.Context, networkLayer network.Layer) *udp {
-	return &udp{
-		ctx:          ctx,
-		networkLayer: networkLayer,
-
-		listeners: make(map[uint16]*UDPListener),
-	}
+func newUDP(ctx context.Context, networkLayer network.Layer) *listenerSet {
+	return newListenerSet(ctx, networkLayer, &udp{})
 }
 
-func (u *udp) listen(address string) (*UDPListener, error) {
-	// parse address
-	port, ipAddress, err := parseHostPort(address, false /*needIP*/)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing address: %w", err)
-	}
-
-	u.listenersMu.Lock()
-	defer u.listenersMu.Unlock()
-
-	// if port is zero, choose a free port
-	if port == 0 {
-		for p := uint16(65535); 1 <= p; p-- {
-			if _, ok := u.listeners[p]; !ok {
-				port = p
-				break
-			}
-		}
-		if port == 0 {
-			return nil, ErrAllPortsAlreadyInUse
-		}
-	}
-
-	if _, ok := u.listeners[port]; ok {
-		return nil, ErrPortAlreadyInUse
-	}
-
+func (*udp) newListener(
+	ctx context.Context,
+	networkLayer network.Layer,
+	port uint16,
+	ipAddress *gopacket.Endpoint,
+) listener {
 	l := &UDPListener{
-		networkLayer: u.networkLayer,
-		ctx:          u.ctx,
+		ctx:          ctx,
+		networkLayer: networkLayer,
 		port:         port,
 		ipAddress:    ipAddress,
 		conns:        make(map[addr]*UDPConn),
 		pendingConns: make(map[addr]*UDPConn),
 	}
 	l.connsCond = sync.NewCond(&l.connsMu)
-	u.listeners[port] = l
-
-	return l, nil
+	return l
 }
 
-func (u *udp) dial(ctx context.Context, address string) (*UDPConn, error) {
-	// parse remote address
-	port, ipAddress, err := parseHostPort(address, true /*needIP*/)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing address: %w", err)
-	}
-
-	// allocate random port
-	l, err := u.listen(":0")
-	if err != nil {
-		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
-	}
-
-	// stop accepting connections
-	if err := l.Close(); err != nil {
-		return nil, fmt.Errorf("error closing local listener for other connections: %w", err)
-	}
-
-	return l.findOrCreateConn(addr{port, *ipAddress}), nil
+func (*udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+	return DeserializeUDPSegment(datagram)
 }
 
-func (u *udp) decapAndDemux(datagram *gplayers.IPv4) {
-	// decap
-	segment, err := DeserializeUDPSegment(datagram)
+func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
+	// deserialize
+	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeUDP, gopacket.Lazy)
+	segment := pkt.TransportLayer().(*gplayers.UDP)
+	if segment == nil || len(segment.Payload) == 0 {
+		return nil, fmt.Errorf("error deserializing transport layer: %w", pkt.ErrorLayer().Error())
+	}
+
+	// validate checksum
+	checksum := segment.Checksum
+	if err := segment.SetNetworkLayerForChecksum(datagram); err != nil {
+		return nil, fmt.Errorf("error setting network layer for checksum: %w", err)
+	}
+	err := gopacket.SerializeLayers(
+		gopacket.NewSerializeBuffer(),
+		gopacket.SerializeOptions{ComputeChecksums: true},
+		segment,
+		gopacket.Payload(segment.Payload),
+	)
 	if err != nil {
-		logrus.
-			WithError(err).
-			WithField("datagram", datagram).
-			Error("error decapsulating transport layer")
-		return
+		return nil, fmt.Errorf("error calculating checksum (reserializing): %w", err)
+	}
+	if segment.Checksum != checksum {
+		return nil, fmt.Errorf("checksums differ. want %d, got %d", segment.Checksum, checksum)
 	}
 
-	// find listener
-	dstPort, dstIPAddress := uint16(segment.DstPort), gplayers.NewIPEndpoint(datagram.DstIP)
-	u.listenersMu.RLock()
-	l, ok := u.listeners[dstPort]
-	u.listenersMu.RUnlock()
-	if !ok {
-		return // drop rule: port is not listening
-	}
-	if l.ipAddress != nil && *l.ipAddress != dstIPAddress {
-		return // drop rule: port is listening but dst IP address does not match the IP bound by the port
-	}
+	return segment, nil
+}
 
-	// demux
-	srcPort, srcIPAddress := uint16(segment.SrcPort), gplayers.NewIPEndpoint(datagram.SrcIP)
-	remoteAddr := addr{srcPort, srcIPAddress}
-	if c := l.demux(remoteAddr); c != nil {
-		c.pushRead(segment.Payload)
-	}
+func (u *UDPListener) matchesDstIPAddress(dstIPAddress gopacket.Endpoint) bool {
+	return u.ipAddress == nil || *u.ipAddress == dstIPAddress
 }
 
 func (u *UDPListener) Accept() (net.Conn, error) {
@@ -220,7 +170,7 @@ func (u *UDPListener) Dial(address string) (net.Conn, error) {
 	return u.findOrCreateConn(addr{port, *ipAddress}), nil
 }
 
-func (u *UDPListener) findOrCreateConn(remoteAddr addr) *UDPConn {
+func (u *UDPListener) findOrCreateConn(remoteAddr addr) conn {
 	u.connsMu.Lock()
 	defer u.connsMu.Unlock()
 
@@ -232,7 +182,7 @@ func (u *UDPListener) findOrCreateConn(remoteAddr addr) *UDPConn {
 	return c
 }
 
-func (u *UDPListener) demux(remoteAddr addr) *UDPConn {
+func (u *UDPListener) demux(remoteAddr addr) conn {
 	u.connsMu.Lock()
 	defer u.connsMu.Unlock()
 
@@ -264,6 +214,10 @@ func newUDPConn(l *UDPListener, remoteAddr addr) *UDPConn {
 	}
 	c.inCond = sync.NewCond(&c.inMu)
 	return c
+}
+
+func (u *UDPConn) protocolHandshake(ctx context.Context) error {
+	return nil // no-op
 }
 
 func (u *UDPConn) pushRead(payload []byte) {
@@ -442,33 +396,4 @@ func (u *UDPConn) SetReadDeadline(d time.Time) error {
 
 func (u *UDPConn) SetWriteDeadline(d time.Time) error {
 	return nil // no-op
-}
-
-func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
-	// deserialize
-	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeUDP, gopacket.Lazy)
-	segment := pkt.TransportLayer().(*gplayers.UDP)
-	if segment == nil || len(segment.Payload) == 0 {
-		return nil, fmt.Errorf("error deserializing transport layer: %w", pkt.ErrorLayer().Error())
-	}
-
-	// validate checksum
-	checksum := segment.Checksum
-	if err := segment.SetNetworkLayerForChecksum(datagram); err != nil {
-		return nil, fmt.Errorf("error setting network layer for checksum: %w", err)
-	}
-	err := gopacket.SerializeLayers(
-		gopacket.NewSerializeBuffer(),
-		gopacket.SerializeOptions{ComputeChecksums: true},
-		segment,
-		gopacket.Payload(segment.Payload),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("error calculating checksum (reserializing): %w", err)
-	}
-	if segment.Checksum != checksum {
-		return nil, fmt.Errorf("checksums differ. want %d, got %d", segment.Checksum, checksum)
-	}
-
-	return segment, nil
 }
