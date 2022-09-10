@@ -16,21 +16,9 @@ import (
 )
 
 type (
-	// UDPListener implements net.Listener for UDP.
-	UDPListener struct {
-		ctx          context.Context
-		networkLayer network.Layer
-		port         uint16
-		ipAddress    *gopacket.Endpoint
-
-		connsMu             sync.Mutex
-		conns, pendingConns map[addr]*UDPConn
-		connsCond           *sync.Cond
-	}
-
 	// UDPConn implements net.Conn for UDP.
 	UDPConn struct {
-		l          *UDPListener
+		l          *listener
 		remoteAddr addr
 
 		inMu         sync.Mutex
@@ -53,24 +41,6 @@ func newUDP(ctx context.Context, networkLayer network.Layer) *listenerSet {
 	return newListenerSet(ctx, networkLayer, &udp{})
 }
 
-func (*udp) newListener(
-	ctx context.Context,
-	networkLayer network.Layer,
-	port uint16,
-	ipAddress *gopacket.Endpoint,
-) listener {
-	l := &UDPListener{
-		ctx:          ctx,
-		networkLayer: networkLayer,
-		port:         port,
-		ipAddress:    ipAddress,
-		conns:        make(map[addr]*UDPConn),
-		pendingConns: make(map[addr]*UDPConn),
-	}
-	l.connsCond = sync.NewCond(&l.connsMu)
-	return l
-}
-
 func (*udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return DeserializeUDPSegment(datagram)
 }
@@ -80,7 +50,7 @@ func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
 	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeUDP, gopacket.Lazy)
 	segment := pkt.TransportLayer().(*gplayers.UDP)
 	if segment == nil || len(segment.Payload) == 0 {
-		return nil, fmt.Errorf("error deserializing transport layer: %w", pkt.ErrorLayer().Error())
+		return nil, fmt.Errorf("error deserializing udp layer: %w", pkt.ErrorLayer().Error())
 	}
 
 	// validate checksum
@@ -104,110 +74,7 @@ func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
 	return segment, nil
 }
 
-func (u *UDPListener) matchesDstIPAddress(dstIPAddress gopacket.Endpoint) bool {
-	return u.ipAddress == nil || *u.ipAddress == dstIPAddress
-}
-
-func (u *UDPListener) Accept() (net.Conn, error) {
-	u.connsMu.Lock()
-	defer u.connsMu.Unlock()
-
-	// wait until one of these happens: a new conn arrives,
-	// or the listener is Close()d
-	if u.pendingConns == nil {
-		return nil, ErrListenerClosed
-	}
-	for len(u.pendingConns) == 0 {
-		u.connsCond.Wait()
-		if u.pendingConns == nil {
-			return nil, ErrListenerClosed
-		}
-	}
-
-	// a conn is now availble, pick the first
-	for addr, conn := range u.pendingConns {
-		delete(u.pendingConns, addr)
-		u.conns[addr] = conn
-		return conn, nil
-	}
-	return nil, nil
-}
-
-func (u *UDPListener) Close() error {
-	// first, delete the pendingConns map so new conns are dropped
-	// as soon as possible
-	u.connsMu.Lock()
-	pendingConns := u.pendingConns
-	u.pendingConns = nil
-	u.connsCond.Broadcast()
-	u.connsMu.Unlock()
-
-	// close pending conns
-	var err error
-	for addr, pendingConn := range pendingConns {
-		if cErr := pendingConn.Close(); cErr != nil {
-			err = multierror.Append(err, fmt.Errorf("error closing pending connection from %s: %w", addr.String(), cErr))
-		}
-	}
-	return err
-}
-
-func (u *UDPListener) Addr() net.Addr {
-	a := &addr{port: u.port}
-	if u.ipAddress != nil {
-		a.ipAddress = *u.ipAddress
-	}
-	return a
-}
-
-// Dial returns a UDP net.Conn bound to the given address.
-// No network calls/handshakes are performed.
-func (u *UDPListener) Dial(address string) (net.Conn, error) {
-	port, ipAddress, err := parseHostPort(address, true /*needIP*/)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing address: %w", err)
-	}
-	return u.findOrCreateConn(addr{port, *ipAddress}), nil
-}
-
-func (u *UDPListener) findOrCreateConn(remoteAddr addr) conn {
-	u.connsMu.Lock()
-	defer u.connsMu.Unlock()
-
-	c, ok := u.conns[remoteAddr]
-	if !ok {
-		c = newUDPConn(u, remoteAddr)
-		u.conns[remoteAddr] = c
-	}
-	return c
-}
-
-func (u *UDPListener) demux(remoteAddr addr) conn {
-	u.connsMu.Lock()
-	defer u.connsMu.Unlock()
-
-	// check already existing conn
-	if c, ok := u.conns[remoteAddr]; ok {
-		return c
-	}
-
-	// no already existing conn, need a new one. check if listener was Close()d first
-	if u.pendingConns == nil {
-		return nil // drop rule: port stopped listening
-	}
-
-	// port is listening. find or create a new pending conn
-	c, ok := u.pendingConns[remoteAddr]
-	if !ok {
-		c = newUDPConn(u, remoteAddr)
-		u.pendingConns[remoteAddr] = c
-	}
-	u.connsCond.Broadcast() // unblock Accept()
-
-	return c
-}
-
-func newUDPConn(l *UDPListener, remoteAddr addr) *UDPConn {
+func (*udp) newConn(l *listener, remoteAddr addr) conn {
 	c := &UDPConn{
 		l:          l,
 		remoteAddr: remoteAddr,
@@ -218,6 +85,10 @@ func newUDPConn(l *UDPListener, remoteAddr addr) *UDPConn {
 
 func (u *UDPConn) protocolHandshake(ctx context.Context) error {
 	return nil // no-op
+}
+
+func (u *UDPConn) recv(segment gopacket.TransportLayer) {
+	u.pushRead(segment.LayerPayload())
 }
 
 func (u *UDPConn) pushRead(payload []byte) {

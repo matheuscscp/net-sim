@@ -27,17 +27,12 @@ func newTCP(ctx context.Context, networkLayer network.Layer) *listenerSet {
 	return newListenerSet(ctx, networkLayer, &tcp{})
 }
 
-func (*tcp) newListener(
-	ctx context.Context,
-	networkLayer network.Layer,
-	port uint16,
-	ipAddress *gopacket.Endpoint,
-) listener {
-	return nil // TODO
-}
-
 func (*tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return nil, nil // TODO
+}
+
+func (*tcp) newConn(l *listener, remoteAddr addr) conn {
+	return nil // TODO
 }
 
 func (t *TCPListener) Accept() (net.Conn, error) {
