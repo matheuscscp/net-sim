@@ -7,6 +7,7 @@ import (
 
 	"github.com/matheuscscp/net-sim/layers/network"
 
+	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 )
 
@@ -19,33 +20,24 @@ type (
 	TCPConn struct {
 	}
 
-	tcp struct {
-		ctx          context.Context
-		networkLayer network.Layer
-
-		listeners map[gplayers.TCPPort]*TCPListener
-	}
+	tcp struct{}
 )
 
-func newTCP(ctx context.Context, networkLayer network.Layer) *tcp {
-	return &tcp{
-		ctx:          ctx,
-		networkLayer: networkLayer,
-
-		listeners: make(map[gplayers.TCPPort]*TCPListener),
-	}
+func newTCP(ctx context.Context, networkLayer network.Layer) *listenerSet {
+	return newListenerSet(ctx, networkLayer, &tcp{})
 }
 
-func (t *tcp) listen(address string) (*TCPListener, error) {
+func (*tcp) newListener(
+	ctx context.Context,
+	networkLayer network.Layer,
+	port uint16,
+	ipAddress *gopacket.Endpoint,
+) listener {
+	return nil // TODO
+}
+
+func (*tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return nil, nil // TODO
-}
-
-func (t *tcp) dial(ctx context.Context, address string) (*TCPConn, error) {
-	return nil, nil // TODO
-}
-
-func (t *tcp) decapAndDemux(datagram *gplayers.IPv4) {
-	// TODO
 }
 
 func (t *TCPListener) Accept() (net.Conn, error) {
