@@ -116,7 +116,7 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 
 	// find conn and receive
 	srcPort, srcIPAddress := portFromEndpoint(flow.Src()), gplayers.NewIPEndpoint(datagram.SrcIP)
-	if c := l.demux(addr{srcPort, srcIPAddress}); c != nil {
+	if c := l.findConnOrCreatePending(addr{srcPort, srcIPAddress}); c != nil {
 		c.recv(segment)
 	}
 }
