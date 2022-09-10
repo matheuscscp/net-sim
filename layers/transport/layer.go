@@ -58,7 +58,7 @@ type (
 	}
 
 	layer struct {
-		tcp       *tcp
+		tcp       *listenerSet
 		udp       *listenerSet
 		cancelCtx context.CancelFunc
 		wg        sync.WaitGroup
