@@ -24,9 +24,9 @@ type (
 		port         uint16
 		ipAddress    *gopacket.Endpoint
 
-		connsMu             sync.Mutex
-		conns, pendingConns map[addr]conn
-		connsCond           *sync.Cond
+		connsMu, pendingConnsMu sync.RWMutex
+		conns, pendingConns     map[addr]conn
+		pendingConnsCond        *sync.Cond
 	}
 )
 
@@ -50,7 +50,7 @@ func newListener(
 		conns:        make(map[addr]conn),
 		pendingConns: make(map[addr]conn),
 	}
-	l.connsCond = sync.NewCond(&l.connsMu)
+	l.pendingConnsCond = sync.NewCond(&l.pendingConnsMu)
 	return l
 }
 
@@ -59,38 +59,52 @@ func (l *listener) matchesDstIPAddress(dstIPAddress gopacket.Endpoint) bool {
 }
 
 func (l *listener) Accept() (net.Conn, error) {
+	c, addr, err := l.waitForPendingConn()
+	if err != nil {
+		return nil, err
+	}
+
 	l.connsMu.Lock()
-	defer l.connsMu.Unlock()
+	l.conns[addr] = c
+	l.connsMu.Unlock()
+
+	return c, nil
+}
+
+func (l *listener) waitForPendingConn() (conn, addr, error) {
+	l.pendingConnsMu.Lock()
+	defer l.pendingConnsMu.Unlock()
 
 	// wait until one of these happens: a new conn arrives,
 	// or the listener is Close()d
 	if l.pendingConns == nil {
-		return nil, ErrListenerClosed
+		return nil, addr{}, ErrListenerClosed
 	}
 	for len(l.pendingConns) == 0 {
-		l.connsCond.Wait()
+		l.pendingConnsCond.Wait()
 		if l.pendingConns == nil {
-			return nil, ErrListenerClosed
+			return nil, addr{}, ErrListenerClosed
 		}
 	}
 
 	// a conn is now availble, pick the first
-	for addr, conn := range l.pendingConns {
-		delete(l.pendingConns, addr)
-		l.conns[addr] = conn
-		return conn, nil
+	var a addr
+	var c conn
+	for a, c = range l.pendingConns {
+		break
 	}
-	return nil, nil
+	delete(l.pendingConns, a)
+	return c, a, nil
 }
 
 func (l *listener) Close() error {
 	// first, delete the pendingConns map so new conns are dropped
 	// as soon as possible
-	l.connsMu.Lock()
+	l.pendingConnsMu.Lock()
 	pendingConns := l.pendingConns
 	l.pendingConns = nil
-	l.connsCond.Broadcast()
-	l.connsMu.Unlock()
+	l.pendingConnsCond.Broadcast()
+	l.pendingConnsMu.Unlock()
 
 	// close pending conns
 	var err error
@@ -137,13 +151,16 @@ func (l *listener) findConnOrCreate(remoteAddr addr) conn {
 }
 
 func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
-	l.connsMu.Lock()
-	defer l.connsMu.Unlock()
-
 	// check already existing conn
-	if c, ok := l.conns[remoteAddr]; ok {
+	l.connsMu.RLock()
+	c, ok := l.conns[remoteAddr]
+	l.connsMu.RUnlock()
+	if ok {
 		return c
 	}
+
+	l.pendingConnsMu.Lock()
+	defer l.pendingConnsMu.Unlock()
 
 	// no already existing conn, need a new one. check if listener was Close()d first
 	if l.pendingConns == nil {
@@ -151,12 +168,12 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	}
 
 	// port is listening. find or create a new pending conn
-	c, ok := l.pendingConns[remoteAddr]
+	c, ok = l.pendingConns[remoteAddr]
 	if !ok {
 		c = l.factory.newConn(l, remoteAddr)
 		l.pendingConns[remoteAddr] = c
 	}
-	l.connsCond.Broadcast() // unblock Accept()
+	l.pendingConnsCond.Broadcast() // unblock Accept()
 
 	return c
 }
