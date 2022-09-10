@@ -12,10 +12,6 @@ import (
 )
 
 type (
-	// TCPListener implements net.Listener for TCP.
-	TCPListener struct {
-	}
-
 	// TCPConn implements net.Conn for TCP.
 	TCPConn struct {
 	}
@@ -32,18 +28,6 @@ func (*tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 }
 
 func (*tcp) newConn(l *listener, remoteAddr addr) conn {
-	return nil // TODO
-}
-
-func (t *TCPListener) Accept() (net.Conn, error) {
-	return nil, nil // TODO
-}
-
-func (t *TCPListener) Close() error {
-	return nil // TODO
-}
-
-func (t *TCPListener) Addr() net.Addr {
 	return nil // TODO
 }
 
