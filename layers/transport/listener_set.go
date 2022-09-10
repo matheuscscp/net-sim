@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/matheuscscp/net-sim/layers/network"
@@ -19,17 +20,12 @@ type (
 		factory      protocolFactory
 
 		listenersMu sync.RWMutex
-		listeners   map[uint16]listener
+		listeners   map[uint16]*listener
 	}
 
 	protocolFactory interface {
-		newListener(
-			ctx context.Context,
-			networkLayer network.Layer,
-			port uint16,
-			ipAddress *gopacket.Endpoint,
-		) listener
 		decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error)
+		newConn(l *listener, remoteAddr addr) conn
 	}
 )
 
@@ -43,11 +39,11 @@ func newListenerSet(
 		networkLayer: networkLayer,
 		factory:      factory,
 
-		listeners: make(map[uint16]listener),
+		listeners: make(map[uint16]*listener),
 	}
 }
 
-func (s *listenerSet) listen(address string) (listener, error) {
+func (s *listenerSet) listen(address string) (*listener, error) {
 	// parse address
 	port, ipAddress, err := parseHostPort(address, false /*needIP*/)
 	if err != nil {
@@ -74,37 +70,24 @@ func (s *listenerSet) listen(address string) (listener, error) {
 		return nil, ErrPortAlreadyInUse
 	}
 
-	l := s.factory.newListener(s.ctx, s.networkLayer, port, ipAddress)
+	l := newListener(s.ctx, s.networkLayer, s.factory, port, ipAddress)
 	s.listeners[port] = l
 
 	return l, nil
 }
 
-func (s *listenerSet) dial(ctx context.Context, address string) (conn, error) {
-	// parse remote address
-	port, ipAddress, err := parseHostPort(address, true /*needIP*/)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing address: %w", err)
-	}
-
-	// allocate random port
+func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error) {
+	// listen on a random port and stop accepting connections
 	l, err := s.listen(":0")
 	if err != nil {
 		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
 	}
-
-	// stop accepting connections
 	if err := l.Close(); err != nil {
 		return nil, fmt.Errorf("error closing local listener for other connections: %w", err)
 	}
 
-	// create local conn and dial protocol
-	c := l.findOrCreateConn(addr{port, *ipAddress})
-	if err := c.protocolHandshake(ctx); err != nil {
-		return nil, fmt.Errorf("error performing protocol handshake: %w", err)
-	}
-
-	return c, nil
+	// then dial
+	return l.Dial(ctx, address)
 }
 
 func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
@@ -131,10 +114,9 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 		return // drop rule: port is listening but dst IP address does not match the IP bound by the port
 	}
 
-	// demux
+	// find conn and receive
 	srcPort, srcIPAddress := portFromEndpoint(flow.Src()), gplayers.NewIPEndpoint(datagram.SrcIP)
-	remoteAddr := addr{srcPort, srcIPAddress}
-	if c := l.demux(remoteAddr); c != nil {
-		c.pushRead(segment.LayerPayload())
+	if c := l.demux(addr{srcPort, srcIPAddress}); c != nil {
+		c.recv(segment)
 	}
 }

@@ -3,12 +3,14 @@ package transport
 import (
 	"context"
 	"net"
+
+	"github.com/google/gopacket"
 )
 
 type (
 	conn interface {
 		net.Conn
 		protocolHandshake(ctx context.Context) error
-		pushRead(payload []byte)
+		recv(segment gopacket.TransportLayer)
 	}
 )
