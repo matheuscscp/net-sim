@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -58,15 +59,10 @@ type (
 
 	layer struct {
 		tcp       *tcp
-		udp       *udp
+		udp       *listenerSet
 		cancelCtx context.CancelFunc
 		wg        sync.WaitGroup
 		giantBuf  chan *gplayers.IPv4
-	}
-
-	addr struct {
-		port      uint16
-		ipAddress gopacket.Endpoint
 	}
 )
 
@@ -171,14 +167,6 @@ func (l *layer) Close() error {
 	return nil
 }
 
-func (a *addr) Network() string {
-	return UDP
-}
-
-func (a *addr) String() string {
-	return fmt.Sprintf("%s:%d", a.ipAddress, a.port)
-}
-
 // IsUseOfClosedConn tells whether the error is due to the port/connection
 // being closed.
 func IsUseOfClosedConn(err error) bool {
@@ -210,4 +198,8 @@ func parseHostPort(address string, needIP bool) (uint16, *gopacket.Endpoint, err
 		return 0, nil, errors.New("host cannot be empty")
 	}
 	return uint16(port), ipAddress, nil
+}
+
+func portFromEndpoint(ep gopacket.Endpoint) uint16 {
+	return binary.BigEndian.Uint16(ep.Raw())
 }
