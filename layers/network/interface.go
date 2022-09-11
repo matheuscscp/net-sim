@@ -344,17 +344,16 @@ func (i *interfaceImpl) sendDelayedDatagramsWaitingforARP(ctx context.Context) {
 		}
 	}
 	pop := func() *gopacket.Endpoint {
-		popped := queueFront
-		if popped == nil {
+		if queueFront == nil {
 			return nil
 		}
 
-		// pop front
-		queueFront = queueFront.next
+		var popped *queueElem
+		popped, queueFront = queueFront, queueFront.next
+		popped.next = nil
 		if queueFront == nil {
 			queueBack = nil
 		}
-		popped.next = nil
 
 		return popped.arpDstIPAddress
 	}

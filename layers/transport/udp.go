@@ -28,7 +28,6 @@ type (
 		inBack       *udpQueueElem
 		inCond       *sync.Cond
 		readDeadline time.Time
-		closed       bool
 	}
 
 	udpQueueElem struct {
@@ -62,16 +61,12 @@ func (c *udpConn) handshakeAccept(ctx context.Context) error {
 }
 
 func (c *udpConn) recv(segment gopacket.TransportLayer) {
-	c.pushRead(segment.LayerPayload())
-}
-
-func (c *udpConn) pushRead(payload []byte) {
-	e := &udpQueueElem{payload: payload}
+	e := &udpQueueElem{payload: segment.LayerPayload()}
 
 	c.inMu.Lock()
 	defer c.inMu.Unlock()
 
-	if c.closed {
+	if c.isClosed() {
 		return
 	}
 
@@ -85,9 +80,46 @@ func (c *udpConn) pushRead(payload []byte) {
 	c.inCond.Signal()
 }
 
+// Read blocks waiting for one UDP segment. b must have enough space for
+// the whole UDP segment payload, otherwise the exceeding part will be
+// lost.
+func (c *udpConn) Read(b []byte) (n int, err error) {
+	e, err := c.waitForQueueElem()
+	if err != nil {
+		return 0, err
+	}
+	return copy(b, e.payload), nil
+}
+
+func (c *udpConn) waitForQueueElem() (*udpQueueElem, error) {
+	c.inMu.Lock()
+	defer c.inMu.Unlock()
+
+	// wait until one of these happens: data becomes available,
+	// the conn is Close()d, or the deadline is exceeded
+	if err := c.checkReadCondition(); err != nil {
+		return nil, err
+	}
+	for c.inFront == nil {
+		c.inCond.Wait()
+		if err := c.checkReadCondition(); err != nil {
+			return nil, err
+		}
+	}
+
+	// data is now available, pop the queue
+	var e *udpQueueElem
+	e, c.inFront = c.inFront, c.inFront.next
+	e.next = nil
+	if c.inFront == nil {
+		c.inBack = nil
+	}
+	return e, nil
+}
+
 func (c *udpConn) checkReadCondition() error {
 	// check closed
-	if c.closed {
+	if c.isClosed() {
 		return ErrConnClosed
 	}
 
@@ -99,38 +131,8 @@ func (c *udpConn) checkReadCondition() error {
 	return nil
 }
 
-// Read blocks waiting for one UDP segment. b must have enough space for
-// the whole UDP segment payload, otherwise the exceeding part will be
-// lost.
-func (c *udpConn) Read(b []byte) (n int, err error) {
-	c.inMu.Lock()
-
-	// wait until one of these happens: data becomes available,
-	// the conn is Close()d, or the deadline is exceeded
-	if err := c.checkReadCondition(); err != nil {
-		c.inMu.Unlock()
-		return 0, err
-	}
-	for c.inFront == nil {
-		c.inCond.Wait()
-		if err := c.checkReadCondition(); err != nil {
-			c.inMu.Unlock()
-			return 0, err
-		}
-	}
-
-	// data is now available, pop the queue
-	e := c.inFront
-	c.inFront = e.next
-	if c.inFront == nil {
-		c.inBack = nil
-	}
-	c.inMu.Unlock() // unlock before copy()ing for performance
-	return copy(b, e.payload), nil
-}
-
 func (c *udpConn) Write(b []byte) (n int, err error) {
-	if c.closed {
+	if c.isClosed() {
 		return 0, ErrConnClosed
 	}
 
@@ -170,6 +172,12 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *udpConn) Close() error {
+	// remove conn from listener so arriving segments are
+	// not directed to this conn anymore
+	c.l.connsMu.Lock()
+	delete(c.l.conns, c.remoteAddr)
+	c.l.connsMu.Unlock()
+
 	// cancel ctx
 	var cancel context.CancelFunc
 	cancel, c.cancelCtx = c.cancelCtx, nil
@@ -177,19 +185,7 @@ func (c *udpConn) Close() error {
 		return nil
 	}
 	cancel()
-
-	// remove conn from listener so arriving segments are
-	// not directed to this conn anymore
-	c.l.connsMu.Lock()
-	delete(c.l.conns, c.remoteAddr)
-	c.l.connsMu.Unlock()
-
-	// close conn
-	c.inMu.Lock()
-	c.closed = true
-	c.inFront = nil
 	c.inCond.Broadcast()
-	c.inMu.Unlock()
 
 	return nil
 }
@@ -244,4 +240,13 @@ func (c *udpConn) SetReadDeadline(d time.Time) error {
 
 func (c *udpConn) SetWriteDeadline(d time.Time) error {
 	return nil // no-op
+}
+
+func (c *udpConn) isClosed() bool {
+	select {
+	case <-c.ctx.Done():
+		return true
+	default:
+		return false
+	}
 }
