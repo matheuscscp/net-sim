@@ -81,8 +81,9 @@ type (
 	}
 
 	loopbackIntf struct {
-		buf    chan *gplayers.IPv4
-		closed bool
+		ctx       context.Context
+		cancelCtx context.CancelFunc
+		buf       chan *gplayers.IPv4
 	}
 )
 
@@ -113,8 +114,7 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 	}
 
 	// create loopback interface
-	lo := &loopbackIntf{buf: make(chan *gplayers.IPv4, channelSize)}
-	addIntf(lo)
+	addIntf(newLoopbackIntf())
 
 	// create configured interfaces
 	for i, intfConf := range conf.Interfaces {
@@ -265,6 +265,11 @@ func (l *layer) Close() error {
 	return err
 }
 
+func newLoopbackIntf() Interface {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &loopbackIntf{ctx, cancel, make(chan *gplayers.IPv4, channelSize)}
+}
+
 func (l *loopbackIntf) Send(ctx context.Context, datagram *gplayers.IPv4) error {
 	if len(datagram.Payload) == 0 {
 		return common.ErrCannotSendEmpty
@@ -274,7 +279,7 @@ func (l *loopbackIntf) Send(ctx context.Context, datagram *gplayers.IPv4) error 
 	if err != nil {
 		return err
 	}
-	return l.send(buf)
+	return l.send(ctx, buf)
 }
 
 func (l *loopbackIntf) SendTransportSegment(
@@ -287,7 +292,7 @@ func (l *loopbackIntf) SendTransportSegment(
 	if err != nil {
 		return err
 	}
-	return l.send(buf)
+	return l.send(ctx, buf)
 }
 
 func (l *loopbackIntf) setDatagramHeaderFields(datagramHeader *gplayers.IPv4) {
@@ -296,17 +301,23 @@ func (l *loopbackIntf) setDatagramHeaderFields(datagramHeader *gplayers.IPv4) {
 	datagramHeader.DstIP = loIPAddr
 }
 
-func (l *loopbackIntf) send(buf []byte) error {
-	if len(buf)-HeaderLength > MTU {
+func (l *loopbackIntf) send(ctx context.Context, datagramBuf []byte) error {
+	if len(datagramBuf)-HeaderLength > MTU {
 		return errPayloadTooLarge
 	}
 
-	datagram, err := DeserializeDatagram(buf)
+	datagram, err := DeserializeDatagram(datagramBuf)
 	if err != nil {
 		return err
 	}
 
-	l.buf <- datagram
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-l.ctx.Done():
+		return l.ctx.Err()
+	case l.buf <- datagram:
+	}
 	return nil
 }
 
@@ -315,10 +326,17 @@ func (l *loopbackIntf) Recv() <-chan *gplayers.IPv4 {
 }
 
 func (l *loopbackIntf) Close() error {
-	if !l.closed {
-		close(l.buf)
-		l.closed = true
+	// cancel ctx
+	var cancel context.CancelFunc
+	cancel, l.cancelCtx = l.cancelCtx, nil
+	if cancel == nil {
+		return nil
 	}
+	cancel()
+
+	// close channels
+	close(l.buf)
+
 	return nil
 }
 
