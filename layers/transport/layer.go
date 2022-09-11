@@ -150,13 +150,13 @@ func (l *layer) Dial(ctx context.Context, network, address string) (net.Conn, er
 }
 
 func (l *layer) Close() error {
-	if l.cancelCtx == nil {
+	// cancel ctx and wait threads
+	var cancel context.CancelFunc
+	cancel, l.cancelCtx = l.cancelCtx, nil
+	if cancel == nil {
 		return nil
 	}
-
-	// close threads
-	l.cancelCtx()
-	l.cancelCtx = nil
+	cancel()
 	l.wg.Wait()
 
 	// close channels

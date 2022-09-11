@@ -232,13 +232,13 @@ func (e *ethernetPort) decap(frameBuf []byte) {
 }
 
 func (e *ethernetPort) Close() error {
-	if e.cancelCtx == nil {
+	// cancel ctx and wait threads
+	var cancel context.CancelFunc
+	cancel, e.cancelCtx = e.cancelCtx, nil
+	if cancel == nil {
 		return nil
 	}
-
-	// close threads
-	e.cancelCtx()
-	e.cancelCtx = nil
+	cancel()
 	e.wg.Wait()
 
 	// close channels
