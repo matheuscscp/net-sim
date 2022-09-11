@@ -117,9 +117,9 @@ func (l *listener) Close() error {
 	cancel()
 
 	// delete the pendingConns map so new conns are dropped
+	var pendingConns map[addr]conn
 	l.pendingConnsMu.Lock()
-	pendingConns := l.pendingConns
-	l.pendingConns = nil
+	pendingConns, l.pendingConns = l.pendingConns, nil
 	l.pendingConnsCond.Broadcast()
 	l.pendingConnsMu.Unlock()
 
