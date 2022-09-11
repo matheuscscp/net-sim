@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/matheuscscp/net-sim/layers/common"
+	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -42,11 +43,12 @@ type (
 	}
 
 	fullDuplexUnreliableWire struct {
+		ctx       context.Context
+		cancelCtx context.CancelFunc
 		conf      *FullDuplexUnreliableWireConfig
 		conn      *net.UDPConn
-		cancelCtx context.CancelFunc
 		wg        sync.WaitGroup
-		capture   chan []byte
+		captureCh chan []byte
 	}
 )
 
@@ -73,11 +75,12 @@ func NewFullDuplexUnreliableWire(
 		}
 		return nil, errors.New(errMsg)
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
 	f := &fullDuplexUnreliableWire{
+		ctx:       ctx,
+		cancelCtx: cancel,
 		conf:      &conf,
 		conn:      udpConn,
-		cancelCtx: cancel,
 	}
 
 	// start capture thread
@@ -93,7 +96,7 @@ func NewFullDuplexUnreliableWire(
 			udpConn.Close()
 			return nil, fmt.Errorf("error creating pcapng writer: %w", err)
 		}
-		f.capture = make(chan []byte, channelSize)
+		f.captureCh = make(chan []byte, channelSize)
 		f.wg.Add(1)
 		go func() {
 			defer func() {
@@ -111,7 +114,7 @@ func NewFullDuplexUnreliableWire(
 				select {
 				case <-ctxDone:
 					return
-				case cap := <-f.capture:
+				case cap := <-f.captureCh:
 					err := captureWriter.WritePacket(gopacket.CaptureInfo{
 						Timestamp:     time.Now(),
 						CaptureLength: len(cap),
@@ -151,12 +154,14 @@ func (f *fullDuplexUnreliableWire) Send(ctx context.Context, payload []byte) (n 
 	go func() {
 		defer close(ch)
 		n, err = c.Write(payload)
-		if err == nil && f.capture != nil {
-			f.capture <- payload[:n]
+		if err == nil {
+			f.capture(ctx, payload[:n])
 		}
 	}()
 
-	// wait for ctx cancel
+	// wait for ch, or for ctx.Done() and cancel operation
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, f.ctx)
+	defer cancel()
 	select {
 	case <-ctx.Done():
 		if err := c.SetWriteDeadline(time.Now()); err != nil { // force timeout for ongoing blocked write
@@ -182,12 +187,14 @@ func (f *fullDuplexUnreliableWire) Recv(ctx context.Context, payload []byte) (n 
 	go func() {
 		defer close(ch)
 		n, err = c.Read(payload)
-		if err == nil && f.capture != nil {
-			f.capture <- payload[:n]
+		if err == nil {
+			f.capture(ctx, payload[:n])
 		}
 	}()
 
-	// wait for ctx cancel
+	// wait for ch, or for ctx.Done() and cancel operation
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, f.ctx)
+	defer cancel()
 	select {
 	case <-ctx.Done():
 		if err := c.SetReadDeadline(time.Now()); err != nil { // force timeout for ongoing blocked read
@@ -211,11 +218,22 @@ func (f *fullDuplexUnreliableWire) Close() error {
 	f.wg.Wait()
 
 	// close channels
-	if f.capture != nil {
-		close(f.capture)
-		for range f.capture {
+	if f.captureCh != nil {
+		close(f.captureCh)
+		for range f.captureCh {
 		}
 	}
 
 	return f.conn.Close()
+}
+
+func (f *fullDuplexUnreliableWire) capture(ctx context.Context, b []byte) {
+	if f.captureCh == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+	case <-f.ctx.Done():
+	case f.captureCh <- b:
+	}
 }

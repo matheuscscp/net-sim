@@ -11,7 +11,6 @@ import (
 
 	"github.com/matheuscscp/net-sim/layers/common"
 	"github.com/matheuscscp/net-sim/layers/physical"
-	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -48,18 +47,18 @@ type (
 	}
 
 	ethernetPort struct {
+		ctx        context.Context
+		cancelCtx  context.CancelFunc
 		conf       *EthernetPortConfig
 		l          logrus.FieldLogger
 		macAddress gopacket.Endpoint
 		medium     physical.FullDuplexUnreliableWire
 		out        chan *outFrame
 		in         chan *gplayers.Ethernet
-		cancelCtx  context.CancelFunc
 		wg         sync.WaitGroup
 	}
 
 	outFrame struct {
-		ctx           context.Context
 		buf           []byte
 		dstMACAddress net.HardwareAddr
 	}
@@ -75,7 +74,10 @@ func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort
 	if err != nil {
 		return nil, fmt.Errorf("error creating medium: %w", err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	nic := &ethernetPort{
+		ctx:        ctx,
+		cancelCtx:  cancel,
 		conf:       &conf,
 		l:          logrus.WithField("port_mac_address", macAddress.String()),
 		macAddress: gplayers.NewMACEndpoint(macAddress),
@@ -88,11 +90,8 @@ func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort
 }
 
 func (e *ethernetPort) startThreads() {
-	var ctx context.Context
-	ctx, e.cancelCtx = context.WithCancel(context.Background())
-	ctxDone := ctx.Done()
-
 	// send
+	ctxDone := e.ctx.Done()
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -101,27 +100,19 @@ func (e *ethernetPort) startThreads() {
 			case <-ctxDone:
 				return
 			case frame := <-e.out:
-				func() {
-					// here we need new a context that must be cancelled if either ctx
-					// or frame.ctx are done
-					ctx, cancel := pkgcontext.WithCancelOnAnotherContext(frame.ctx, ctx)
-					defer cancel()
-					l := e.l.
-						WithField("frame", frame)
-
-					// send
-					got, err := e.medium.Send(ctx, frame.buf)
-					if err != nil {
-						l.
-							WithError(err).
-							Error("error sending ethernet frame")
-					} else if want := len(frame.buf); got < want {
-						l.
-							WithField("want", want).
-							WithField("got", got).
-							Error("wrong number of bytes sent for ethernet frame")
-					}
-				}()
+				l := e.l.
+					WithField("frame", frame)
+				got, err := e.medium.Send(e.ctx, frame.buf)
+				if err != nil {
+					l.
+						WithError(err).
+						Error("error sending ethernet frame")
+				} else if want := len(frame.buf); got < want {
+					l.
+						WithField("want", want).
+						WithField("got", got).
+						Error("wrong number of bytes sent for ethernet frame")
+				}
 			}
 		}
 	}()
@@ -132,7 +123,7 @@ func (e *ethernetPort) startThreads() {
 		defer e.wg.Done()
 		for {
 			buf := make([]byte, 2*MTU)
-			n, err := e.medium.Recv(ctx, buf)
+			n, err := e.medium.Recv(e.ctx, buf)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
@@ -174,7 +165,13 @@ func (e *ethernetPort) Send(ctx context.Context, frame *gplayers.Ethernet) error
 	finalBuf := append(buf.Bytes(), b...)
 
 	// send
-	e.out <- &outFrame{ctx, finalBuf, frame.DstMAC}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.ctx.Done():
+		return e.ctx.Err()
+	case e.out <- &outFrame{finalBuf, frame.DstMAC}:
+	}
 
 	return nil
 }
@@ -227,7 +224,14 @@ func (e *ethernetPort) decap(frameBuf []byte) {
 	}
 
 	if frame != nil {
-		e.in <- frame
+		select {
+		case <-e.ctx.Done():
+			e.l.
+				WithError(e.ctx.Err()).
+				WithField("frame", frame).
+				Error("port context done while receiving frame")
+		case e.in <- frame:
+		}
 	}
 }
 
