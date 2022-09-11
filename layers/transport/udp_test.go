@@ -238,8 +238,8 @@ func TestUDPLocalServer(t *testing.T) {
 		net.ParseIP("127.0.0.1"), // dstIPAddress
 	)
 	serverConn, err = server.Accept()
-	assert.Error(t, err)
-	assert.Equal(t, transport.ErrListenerClosed, err)
+	require.Error(t, err)
+	assert.True(t, transport.IsUseOfClosedConn(err))
 	assert.Nil(t, serverConn)
 
 	for _, c := range []io.Closer{client, server} {
