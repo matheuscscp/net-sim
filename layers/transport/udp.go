@@ -18,6 +18,8 @@ type (
 	udp struct{}
 
 	udpConn struct {
+		ctx        context.Context
+		cancelCtx  context.CancelFunc
 		l          *listener
 		remoteAddr addr
 
@@ -36,7 +38,10 @@ type (
 )
 
 func (*udp) newConn(l *listener, remoteAddr addr) conn {
+	ctx, cancel := context.WithCancel(context.Background())
 	c := &udpConn{
+		ctx:        ctx,
+		cancelCtx:  cancel,
 		l:          l,
 		remoteAddr: remoteAddr,
 	}
@@ -165,8 +170,16 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *udpConn) Close() error {
-	// first, remove conn from listener so arriving segments are
-	// not directed to this conn anymore as soon as possible
+	// cancel ctx
+	var cancel context.CancelFunc
+	cancel, c.cancelCtx = c.cancelCtx, nil
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+
+	// remove conn from listener so arriving segments are
+	// not directed to this conn anymore
 	c.l.connsMu.Lock()
 	delete(c.l.conns, c.remoteAddr)
 	c.l.connsMu.Unlock()
@@ -205,30 +218,25 @@ func (c *udpConn) SetDeadline(d time.Time) error {
 
 // SetReadDeadline sets the read deadline. This method
 // starts a thread that only returns when the deadline
-// is reached, so calling it with a time point that is
-// too distant in the future is not a good idea.
+// is reached (or when the connection is Close()d), so
+// calling it with a time point that is too distant in
+// the future is not a good idea.
 func (c *udpConn) SetReadDeadline(d time.Time) error {
 	c.inMu.Lock()
 	c.readDeadline = d
 	c.inMu.Unlock()
 
-	// start thread to wait until either the deadline or the
-	// transport layer context is done and then notify all
-	// blocked readers
+	// start thread to wait until either the deadline or until
+	// the connection context is done and then notify all blocked
+	// readers
 	go func() {
-		defer c.inCond.Broadcast() // notify blocked readers
-		timer := time.NewTimer(time.Until(d))
-		select {
-		case <-c.l.ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return
-		case <-timer.C:
-		}
+		// wait
+		ctx, cancel := context.WithDeadline(c.ctx, d)
+		defer cancel()
+
+		// notify
+		<-ctx.Done()
+		c.inCond.Broadcast()
 	}()
 
 	return nil

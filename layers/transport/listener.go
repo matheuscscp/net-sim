@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/matheuscscp/net-sim/layers/network"
-	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"
 	"github.com/hashicorp/go-multierror"
@@ -20,6 +19,7 @@ type (
 
 	listener struct {
 		ctx          context.Context
+		cancelCtx    context.CancelFunc
 		networkLayer network.Layer
 		factory      protocolFactory
 		port         uint16
@@ -42,8 +42,10 @@ func newListener(
 	port uint16,
 	ipAddress *gopacket.Endpoint,
 ) *listener {
+	ctx, cancel := context.WithCancel(ctx)
 	l := &listener{
 		ctx:          ctx,
+		cancelCtx:    cancel,
 		networkLayer: networkLayer,
 		factory:      factory,
 		port:         port,
@@ -106,8 +108,15 @@ func (l *listener) waitForPendingConnAndMoveToConns() (conn, error) {
 }
 
 func (l *listener) Close() error {
-	// first, delete the pendingConns map so new conns are dropped
-	// as soon as possible
+	// cancel ctx
+	var cancel context.CancelFunc
+	cancel, l.cancelCtx = l.cancelCtx, nil
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+
+	// delete the pendingConns map so new conns are dropped
 	l.pendingConnsMu.Lock()
 	pendingConns := l.pendingConns
 	l.pendingConns = nil
@@ -143,8 +152,6 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	c := l.findConnOrCreate(addr{port, *ipAddress})
 
 	// handshake
-	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, l.ctx)
-	defer cancel()
 	if err := c.handshakeDial(ctx); err != nil {
 		return nil, fmt.Errorf("error dialing protocol handshake: %w", err)
 	}
