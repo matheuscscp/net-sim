@@ -487,13 +487,13 @@ func (i *interfaceImpl) decapARP(ctx context.Context, frame *gplayers.Ethernet) 
 }
 
 func (i *interfaceImpl) Close() error {
-	if i.cancelCtx == nil {
+	// cancel ctx and wait threads
+	var cancel context.CancelFunc
+	cancel, i.cancelCtx = i.cancelCtx, nil
+	if cancel == nil {
 		return nil
 	}
-
-	// close threads
-	i.cancelCtx()
-	i.cancelCtx = nil
+	cancel()
 	i.wg.Wait()
 
 	// close channels

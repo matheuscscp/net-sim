@@ -9,8 +9,8 @@ type (
 	hostLayer struct{}
 )
 
-// NewHostLayer returns an implementation of Layer with Go's standard
-// library "net" (using the OS native sockets).
+// NewHostLayer returns an implementation of Layer backed by Go's standard
+// library "net" (hence backed by the OS native sockets).
 func NewHostLayer() Layer {
 	return &hostLayer{}
 }

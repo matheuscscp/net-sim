@@ -201,13 +201,13 @@ func (f *fullDuplexUnreliableWire) Recv(ctx context.Context, payload []byte) (n 
 }
 
 func (f *fullDuplexUnreliableWire) Close() error {
-	if f.cancelCtx == nil {
+	// cancel ctx and wait threads
+	var cancel context.CancelFunc
+	cancel, f.cancelCtx = f.cancelCtx, nil
+	if cancel == nil {
 		return nil
 	}
-
-	// close threads
-	f.cancelCtx()
-	f.cancelCtx = nil
+	cancel()
 	f.wg.Wait()
 
 	// close channels
