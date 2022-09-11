@@ -86,8 +86,8 @@ func NewLayer(networkLayer network.Layer) Layer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	l := &layer{
-		tcp:       newTCP(ctx, networkLayer),
-		udp:       newUDP(ctx, networkLayer),
+		tcp:       newListenerSet(ctx, networkLayer, &tcp{}),
+		udp:       newListenerSet(ctx, networkLayer, &udp{}),
 		cancelCtx: cancel,
 		giantBuf:  make(chan *gplayers.IPv4, demuxThreads*channelSize),
 	}

@@ -60,9 +60,9 @@ func (l *listener) matchesDstIPAddress(dstIPAddress gopacket.Endpoint) bool {
 }
 
 func (l *listener) Accept() (net.Conn, error) {
-	c, err := l.accept()
+	c, err := l.waitForPendingConnAndMoveToConns()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error waiting for pending connection: %w", err)
 	}
 
 	if err := c.handshakeAccept(l.ctx); err != nil {
@@ -73,7 +73,7 @@ func (l *listener) Accept() (net.Conn, error) {
 	return c, nil
 }
 
-func (l *listener) accept() (conn, error) {
+func (l *listener) waitForPendingConnAndMoveToConns() (conn, error) {
 	l.pendingConnsMu.Lock()
 	defer l.pendingConnsMu.Unlock()
 
@@ -164,7 +164,8 @@ func (l *listener) findConnOrCreate(remoteAddr addr) conn {
 }
 
 func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
-	// check already existing conn
+	// check for an already existing conn (this is the most common case
+	// and therefore should be optimized by using an RWMutex)
 	l.connsMu.RLock()
 	c, ok := l.conns[remoteAddr]
 	l.connsMu.RUnlock()
@@ -172,12 +173,25 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 		return c
 	}
 
+	// conn does not exist. acquire pendingConns lock
 	l.pendingConnsMu.Lock()
 	defer l.pendingConnsMu.Unlock()
 
-	// no already existing conn, need a new one. check if listener was Close()d first
+	// now we need to check for an already existing conn again,
+	// because between requesting and acquiring the pendingConns
+	// lock it's possible that accept() added our conn to l.conns
+	l.connsMu.RLock()
+	c, ok = l.conns[remoteAddr]
+	l.connsMu.RUnlock()
+	if ok {
+		return c
+	}
+
+	// no already existing conn, and we hold the pendingConns lock.
+	// time to create a pending conn, but, first, check if listener
+	// was Close()d
 	if l.pendingConns == nil {
-		return nil // drop rule: port stopped listening
+		return nil // drop rule: port was Close()d (stopped listening)
 	}
 
 	// port is listening. find or create a new pending conn

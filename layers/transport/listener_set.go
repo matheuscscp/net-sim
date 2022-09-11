@@ -24,8 +24,8 @@ type (
 	}
 
 	protocolFactory interface {
-		decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error)
 		newConn(l *listener, remoteAddr addr) conn
+		decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error)
 	}
 )
 

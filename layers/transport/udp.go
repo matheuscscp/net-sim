@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/matheuscscp/net-sim/layers/common"
-	"github.com/matheuscscp/net-sim/layers/network"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -16,8 +15,9 @@ import (
 )
 
 type (
-	// UDPConn implements net.Conn for UDP.
-	UDPConn struct {
+	udp struct{}
+
+	udpConn struct {
 		l          *listener
 		remoteAddr addr
 
@@ -29,53 +29,14 @@ type (
 		closed       bool
 	}
 
-	udp struct{}
-
 	udpQueueElem struct {
 		payload []byte
 		next    *udpQueueElem
 	}
 )
 
-func newUDP(ctx context.Context, networkLayer network.Layer) *listenerSet {
-	return newListenerSet(ctx, networkLayer, &udp{})
-}
-
-func (*udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
-	return DeserializeUDPSegment(datagram)
-}
-
-func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
-	// deserialize
-	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeUDP, gopacket.Lazy)
-	segment := pkt.TransportLayer().(*gplayers.UDP)
-	if segment == nil || len(segment.Payload) == 0 {
-		return nil, fmt.Errorf("error deserializing udp layer: %w", pkt.ErrorLayer().Error())
-	}
-
-	// validate checksum
-	checksum := segment.Checksum
-	if err := segment.SetNetworkLayerForChecksum(datagram); err != nil {
-		return nil, fmt.Errorf("error setting network layer for checksum: %w", err)
-	}
-	err := gopacket.SerializeLayers(
-		gopacket.NewSerializeBuffer(),
-		gopacket.SerializeOptions{ComputeChecksums: true},
-		segment,
-		gopacket.Payload(segment.Payload),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("error calculating checksum (reserializing): %w", err)
-	}
-	if segment.Checksum != checksum {
-		return nil, fmt.Errorf("checksums differ. want %d, got %d", segment.Checksum, checksum)
-	}
-
-	return segment, nil
-}
-
 func (*udp) newConn(l *listener, remoteAddr addr) conn {
-	c := &UDPConn{
+	c := &udpConn{
 		l:          l,
 		remoteAddr: remoteAddr,
 	}
@@ -83,46 +44,50 @@ func (*udp) newConn(l *listener, remoteAddr addr) conn {
 	return c
 }
 
-func (u *UDPConn) handshakeDial(ctx context.Context) error {
+func (*udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+	return DeserializeUDPSegment(datagram)
+}
+
+func (c *udpConn) handshakeDial(ctx context.Context) error {
 	return nil // no-op
 }
 
-func (u *UDPConn) handshakeAccept(ctx context.Context) error {
+func (c *udpConn) handshakeAccept(ctx context.Context) error {
 	return nil // no-op
 }
 
-func (u *UDPConn) recv(segment gopacket.TransportLayer) {
-	u.pushRead(segment.LayerPayload())
+func (c *udpConn) recv(segment gopacket.TransportLayer) {
+	c.pushRead(segment.LayerPayload())
 }
 
-func (u *UDPConn) pushRead(payload []byte) {
+func (c *udpConn) pushRead(payload []byte) {
 	e := &udpQueueElem{payload: payload}
 
-	u.inMu.Lock()
-	defer u.inMu.Unlock()
+	c.inMu.Lock()
+	defer c.inMu.Unlock()
 
-	if u.closed {
+	if c.closed {
 		return
 	}
 
-	if u.inBack == nil {
-		u.inFront = e
-		u.inBack = e
+	if c.inBack == nil {
+		c.inFront = e
+		c.inBack = e
 	} else {
-		u.inBack.next = e
-		u.inBack = e
+		c.inBack.next = e
+		c.inBack = e
 	}
-	u.inCond.Signal()
+	c.inCond.Signal()
 }
 
-func (u *UDPConn) checkReadCondition() error {
+func (c *udpConn) checkReadCondition() error {
 	// check closed
-	if u.closed {
+	if c.closed {
 		return ErrConnClosed
 	}
 
 	// check deadline
-	if !u.readDeadline.IsZero() && u.readDeadline.Before(time.Now()) {
+	if !c.readDeadline.IsZero() && c.readDeadline.Before(time.Now()) {
 		return ErrTimeout
 	}
 
@@ -132,35 +97,35 @@ func (u *UDPConn) checkReadCondition() error {
 // Read blocks waiting for one UDP segment. b must have enough space for
 // the whole UDP segment payload, otherwise the exceeding part will be
 // lost.
-func (u *UDPConn) Read(b []byte) (n int, err error) {
-	u.inMu.Lock()
+func (c *udpConn) Read(b []byte) (n int, err error) {
+	c.inMu.Lock()
 
 	// wait until one of these happens: data becomes available,
 	// the conn is Close()d, or the deadline is exceeded
-	if err := u.checkReadCondition(); err != nil {
-		u.inMu.Unlock()
+	if err := c.checkReadCondition(); err != nil {
+		c.inMu.Unlock()
 		return 0, err
 	}
-	for u.inFront == nil {
-		u.inCond.Wait()
-		if err := u.checkReadCondition(); err != nil {
-			u.inMu.Unlock()
+	for c.inFront == nil {
+		c.inCond.Wait()
+		if err := c.checkReadCondition(); err != nil {
+			c.inMu.Unlock()
 			return 0, err
 		}
 	}
 
 	// data is now available, pop the queue
-	e := u.inFront
-	u.inFront = e.next
-	if u.inFront == nil {
-		u.inBack = nil
+	e := c.inFront
+	c.inFront = e.next
+	if c.inFront == nil {
+		c.inBack = nil
 	}
-	u.inMu.Unlock() // unlock before copy()ing for performance
+	c.inMu.Unlock() // unlock before copy()ing for performance
 	return copy(b, e.payload), nil
 }
 
-func (u *UDPConn) Write(b []byte) (n int, err error) {
-	if u.closed {
+func (c *udpConn) Write(b []byte) (n int, err error) {
+	if c.closed {
 		return 0, ErrConnClosed
 	}
 
@@ -174,21 +139,21 @@ func (u *UDPConn) Write(b []byte) (n int, err error) {
 
 	// send
 	datagramHeader := &gplayers.IPv4{
-		DstIP:    u.remoteAddr.ipAddress.Raw(),
+		DstIP:    c.remoteAddr.ipAddress.Raw(),
 		Protocol: gplayers.IPProtocolUDP,
 	}
 	segment := &gplayers.UDP{
 		BaseLayer: gplayers.BaseLayer{
 			Payload: b,
 		},
-		SrcPort: gplayers.UDPPort(u.l.port),
-		DstPort: gplayers.UDPPort(u.remoteAddr.port),
+		SrcPort: gplayers.UDPPort(c.l.port),
+		DstPort: gplayers.UDPPort(c.remoteAddr.port),
 		Length:  uint16(len(b) + UDPHeaderLength),
 	}
-	if u.l.ipAddress != nil {
-		datagramHeader.SrcIP = u.l.ipAddress.Raw()
+	if c.l.ipAddress != nil {
+		datagramHeader.SrcIP = c.l.ipAddress.Raw()
 	}
-	intf, err := u.l.networkLayer.FindInterfaceForHeader(datagramHeader)
+	intf, err := c.l.networkLayer.FindInterfaceForHeader(datagramHeader)
 	if err != nil {
 		return 0, fmt.Errorf("error finding interface for datagram header: %w", err)
 	}
@@ -199,40 +164,40 @@ func (u *UDPConn) Write(b []byte) (n int, err error) {
 	return len(b), nil
 }
 
-func (u *UDPConn) Close() error {
+func (c *udpConn) Close() error {
 	// first, remove conn from listener so arriving segments are
 	// not directed to this conn anymore as soon as possible
-	u.l.connsMu.Lock()
-	delete(u.l.conns, u.remoteAddr)
-	u.l.connsMu.Unlock()
+	c.l.connsMu.Lock()
+	delete(c.l.conns, c.remoteAddr)
+	c.l.connsMu.Unlock()
 
 	// close conn
-	u.inMu.Lock()
-	u.closed = true
-	u.inFront = nil
-	u.inCond.Broadcast()
-	u.inMu.Unlock()
+	c.inMu.Lock()
+	c.closed = true
+	c.inFront = nil
+	c.inCond.Broadcast()
+	c.inMu.Unlock()
 
 	return nil
 }
 
-func (u *UDPConn) LocalAddr() net.Addr {
-	return u.l.Addr()
+func (c *udpConn) LocalAddr() net.Addr {
+	return c.l.Addr()
 }
 
-func (u *UDPConn) RemoteAddr() net.Addr {
-	a := u.remoteAddr
+func (c *udpConn) RemoteAddr() net.Addr {
+	a := c.remoteAddr
 	return &a
 }
 
 // SetDeadline is the same as calling SetReadDeadline() and
 // SetWriteDeadline().
-func (u *UDPConn) SetDeadline(d time.Time) error {
+func (c *udpConn) SetDeadline(d time.Time) error {
 	var err error
-	if dErr := u.SetReadDeadline(d); dErr != nil {
+	if dErr := c.SetReadDeadline(d); dErr != nil {
 		err = multierror.Append(err, fmt.Errorf("error setting read deadline: %w", err))
 	}
-	if dErr := u.SetWriteDeadline(d); dErr != nil {
+	if dErr := c.SetWriteDeadline(d); dErr != nil {
 		err = multierror.Append(err, fmt.Errorf("error setting write deadline: %w", err))
 	}
 	return err
@@ -242,19 +207,19 @@ func (u *UDPConn) SetDeadline(d time.Time) error {
 // starts a thread that only returns when the deadline
 // is reached, so calling it with a time point that is
 // too distant in the future is not a good idea.
-func (u *UDPConn) SetReadDeadline(d time.Time) error {
-	u.inMu.Lock()
-	u.readDeadline = d
-	u.inMu.Unlock()
+func (c *udpConn) SetReadDeadline(d time.Time) error {
+	c.inMu.Lock()
+	c.readDeadline = d
+	c.inMu.Unlock()
 
 	// start thread to wait until either the deadline or the
 	// transport layer context is done and then notify all
 	// blocked readers
 	go func() {
-		defer u.inCond.Broadcast() // notify blocked readers
+		defer c.inCond.Broadcast() // notify blocked readers
 		timer := time.NewTimer(time.Until(d))
 		select {
-		case <-u.l.ctx.Done():
+		case <-c.l.ctx.Done():
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -269,6 +234,6 @@ func (u *UDPConn) SetReadDeadline(d time.Time) error {
 	return nil
 }
 
-func (u *UDPConn) SetWriteDeadline(d time.Time) error {
+func (c *udpConn) SetWriteDeadline(d time.Time) error {
 	return nil // no-op
 }
