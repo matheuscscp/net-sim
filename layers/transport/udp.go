@@ -162,7 +162,7 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 	if err != nil {
 		return 0, fmt.Errorf("error finding interface for datagram header: %w", err)
 	}
-	if err := intf.SendTransportSegment(context.Background(), datagramHeader, segment); err != nil {
+	if err := intf.SendTransportSegment(c.ctx, datagramHeader, segment); err != nil {
 		return 0, fmt.Errorf("error sending IP datagram: %w", err)
 	}
 
