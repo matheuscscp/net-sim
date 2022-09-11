@@ -66,10 +66,12 @@ func (s *listenerSet) listen(address string) (*listener, error) {
 		}
 	}
 
+	// check port already in use
 	if _, ok := s.listeners[port]; ok {
 		return nil, ErrPortAlreadyInUse
 	}
 
+	// allocate port
 	l := newListener(s.ctx, s.networkLayer, s.factory, port, ipAddress)
 	s.listeners[port] = l
 
@@ -83,7 +85,7 @@ func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error
 		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
 	}
 	if err := l.Close(); err != nil {
-		return nil, fmt.Errorf("error closing local listener for other connections: %w", err)
+		return nil, fmt.Errorf("error closing local port for accepting connections: %w", err)
 	}
 
 	// then dial

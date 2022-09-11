@@ -83,7 +83,11 @@ func (*udp) newConn(l *listener, remoteAddr addr) conn {
 	return c
 }
 
-func (u *UDPConn) protocolHandshake(ctx context.Context) error {
+func (u *UDPConn) handshakeDial(ctx context.Context) error {
+	return nil // no-op
+}
+
+func (u *UDPConn) handshakeAccept(ctx context.Context) error {
 	return nil // no-op
 }
 

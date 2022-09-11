@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/matheuscscp/net-sim/layers/network"
+	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"
 	"github.com/hashicorp/go-multierror"
@@ -59,42 +60,49 @@ func (l *listener) matchesDstIPAddress(dstIPAddress gopacket.Endpoint) bool {
 }
 
 func (l *listener) Accept() (net.Conn, error) {
-	c, addr, err := l.waitForPendingConn()
+	c, err := l.accept()
 	if err != nil {
 		return nil, err
 	}
 
-	l.connsMu.Lock()
-	l.conns[addr] = c
-	l.connsMu.Unlock()
+	if err := c.handshakeAccept(l.ctx); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("error accepting protocol handshake: %w", err)
+	}
 
 	return c, nil
 }
 
-func (l *listener) waitForPendingConn() (conn, addr, error) {
+func (l *listener) accept() (conn, error) {
 	l.pendingConnsMu.Lock()
 	defer l.pendingConnsMu.Unlock()
 
 	// wait until one of these happens: a new conn arrives,
 	// or the listener is Close()d
 	if l.pendingConns == nil {
-		return nil, addr{}, ErrListenerClosed
+		return nil, ErrListenerClosed
 	}
 	for len(l.pendingConns) == 0 {
 		l.pendingConnsCond.Wait()
 		if l.pendingConns == nil {
-			return nil, addr{}, ErrListenerClosed
+			return nil, ErrListenerClosed
 		}
 	}
 
-	// a conn is now availble, pick the first
+	// a pending conn is now availble, pick the first and remove from map
 	var a addr
 	var c conn
 	for a, c = range l.pendingConns {
 		break
 	}
 	delete(l.pendingConns, a)
-	return c, a, nil
+
+	// add to accepted conns
+	l.connsMu.Lock()
+	l.conns[a] = c
+	l.connsMu.Unlock()
+
+	return c, nil
 }
 
 func (l *listener) Close() error {
@@ -127,13 +135,18 @@ func (l *listener) Addr() net.Addr {
 // Dial returns a net.Conn bound to the given address.
 // No network calls/handshakes are performed.
 func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
+	// find conn or create
 	port, ipAddress, err := parseHostPort(address, true /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
 	c := l.findConnOrCreate(addr{port, *ipAddress})
-	if err := c.protocolHandshake(ctx); err != nil {
-		return nil, fmt.Errorf("error performing protocol handshake: %w", err)
+
+	// handshake
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, l.ctx)
+	defer cancel()
+	if err := c.handshakeDial(ctx); err != nil {
+		return nil, fmt.Errorf("error dialing protocol handshake: %w", err)
 	}
 	return c, nil
 }
@@ -172,8 +185,8 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	if !ok {
 		c = l.factory.newConn(l, remoteAddr)
 		l.pendingConns[remoteAddr] = c
+		l.pendingConnsCond.Broadcast() // unblock Accept()
 	}
-	l.pendingConnsCond.Broadcast() // unblock Accept()
 
 	return c
 }
