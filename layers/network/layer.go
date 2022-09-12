@@ -9,6 +9,7 @@ import (
 
 	"github.com/matheuscscp/net-sim/layers/common"
 	"github.com/matheuscscp/net-sim/layers/link"
+	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -73,6 +74,8 @@ type (
 	}
 
 	layer struct {
+		ctx             context.Context
+		cancelCtx       context.CancelFunc
 		conf            *LayerConfig
 		intfs           []Interface
 		intfMap         map[string]Interface
@@ -145,7 +148,10 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 		forwardingTable.StoreRoute(Internet(), intf)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &layer{
+		ctx:             ctx,
+		cancelCtx:       cancel,
 		conf:            &conf,
 		intfs:           intfs,
 		intfMap:         intfMap,
@@ -207,6 +213,9 @@ func (l *layer) Interface(name string) Interface {
 }
 
 func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv4)) {
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, l.ctx)
+	defer cancel()
+
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
@@ -256,6 +265,15 @@ func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv
 }
 
 func (l *layer) Close() error {
+	// cancel ctx
+	var cancel context.CancelFunc
+	cancel, l.cancelCtx = l.cancelCtx, nil
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+
+	// close interfaces
 	var err error
 	for _, intf := range l.intfs {
 		if cErr := intf.Close(); cErr != nil {
