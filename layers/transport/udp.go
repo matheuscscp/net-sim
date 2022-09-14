@@ -165,7 +165,7 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 		return 0, fmt.Errorf("error finding interface for datagram header: %w", err)
 	}
 	if err := intf.SendTransportSegment(c.ctx, datagramHeader, segment); err != nil {
-		return 0, fmt.Errorf("error sending IP datagram: %w", err)
+		return 0, fmt.Errorf("error sending transport segment: %w", err)
 	}
 
 	return len(b), nil
@@ -243,10 +243,5 @@ func (c *udpConn) SetWriteDeadline(d time.Time) error {
 }
 
 func (c *udpConn) isClosed() bool {
-	select {
-	case <-c.ctx.Done():
-		return true
-	default:
-		return false
-	}
+	return c.ctx.Err() != nil
 }
