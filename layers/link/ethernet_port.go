@@ -74,9 +74,9 @@ func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort
 	if err != nil {
 		return nil, fmt.Errorf("error creating medium: %w", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	portCtx, cancel := context.WithCancel(context.Background())
 	nic := &ethernetPort{
-		ctx:        ctx,
+		ctx:        portCtx,
 		cancelCtx:  cancel,
 		conf:       &conf,
 		l:          logrus.WithField("port_mac_address", macAddress.String()),
@@ -91,13 +91,13 @@ func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort
 
 func (e *ethernetPort) startThreads() {
 	// send
-	ctxDone := e.ctx.Done()
+	ectxDone := e.ctx.Done()
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
 		for {
 			select {
-			case <-ctxDone:
+			case <-ectxDone:
 				return
 			case frame := <-e.out:
 				l := e.l.
@@ -133,7 +133,7 @@ func (e *ethernetPort) startThreads() {
 					Error("error receiving ethernet frame")
 				continue
 			}
-			e.decap(buf[:n])
+			e.decapAndRecv(buf[:n])
 		}
 	}()
 }
@@ -180,7 +180,7 @@ func (e *ethernetPort) Recv() <-chan *gplayers.Ethernet {
 	return e.in
 }
 
-func (e *ethernetPort) decap(frameBuf []byte) {
+func (e *ethernetPort) decapAndRecv(frameBuf []byte) {
 	var frame *gplayers.Ethernet
 	err := func() error {
 		// split frame data and crc
@@ -224,14 +224,18 @@ func (e *ethernetPort) decap(frameBuf []byte) {
 	}
 
 	if frame != nil {
-		select {
-		case <-e.ctx.Done():
-			e.l.
-				WithError(e.ctx.Err()).
-				WithField("frame", frame).
-				Error("port context done while receiving frame")
-		case e.in <- frame:
-		}
+		e.recv(frame)
+	}
+}
+
+func (e *ethernetPort) recv(frame *gplayers.Ethernet) {
+	select {
+	case <-e.ctx.Done():
+		e.l.
+			WithError(e.ctx.Err()).
+			WithField("frame", frame).
+			Error("port context done while receiving frame")
+	case e.in <- frame:
 	}
 }
 

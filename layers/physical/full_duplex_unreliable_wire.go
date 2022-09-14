@@ -75,16 +75,16 @@ func NewFullDuplexUnreliableWire(
 		}
 		return nil, errors.New(errMsg)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	wireCtx, cancel := context.WithCancel(context.Background())
 	f := &fullDuplexUnreliableWire{
-		ctx:       ctx,
+		ctx:       wireCtx,
 		cancelCtx: cancel,
 		conf:      &conf,
 		conn:      udpConn,
 	}
 
-	// start capture thread
 	if conf.Capture != nil {
+		// open capture file and pcapng writer
 		captureFile, err := os.Create(conf.Capture.Filename)
 		if err != nil {
 			udpConn.Close()
@@ -96,6 +96,8 @@ func NewFullDuplexUnreliableWire(
 			udpConn.Close()
 			return nil, fmt.Errorf("error creating pcapng writer: %w", err)
 		}
+
+		// start capture thread
 		f.captureCh = make(chan []byte, channelSize)
 		f.wg.Add(1)
 		go func() {
@@ -109,22 +111,16 @@ func NewFullDuplexUnreliableWire(
 				WithField("recv_udp_endpoint", conf.RecvUDPEndpoint).
 				WithField("send_udp_endpoint", conf.SendUDPEndpoint)
 
-			ctxDone := ctx.Done()
-			for {
-				select {
-				case <-ctxDone:
-					return
-				case cap := <-f.captureCh:
-					err := captureWriter.WritePacket(gopacket.CaptureInfo{
-						Timestamp:     time.Now(),
-						CaptureLength: len(cap),
-						Length:        len(cap),
-					}, cap)
-					if err != nil {
-						l.
-							WithError(err).
-							Error("error capturing data")
-					}
+			for b := range f.captureCh {
+				err := captureWriter.WritePacket(gopacket.CaptureInfo{
+					Timestamp:     time.Now(),
+					CaptureLength: len(b),
+					Length:        len(b),
+				}, b)
+				if err != nil {
+					l.
+						WithError(err).
+						Error("error capturing data")
 				}
 			}
 		}()
@@ -155,11 +151,11 @@ func (f *fullDuplexUnreliableWire) Send(ctx context.Context, payload []byte) (n 
 		defer close(ch)
 		n, err = c.Write(payload)
 		if err == nil {
-			f.capture(ctx, payload[:n])
+			f.capture(payload[:n])
 		}
 	}()
 
-	// wait for ch, or for ctx.Done() and cancel operation
+	// wait for ch or for ctx.Done() and cancel the operation
 	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, f.ctx)
 	defer cancel()
 	select {
@@ -188,11 +184,11 @@ func (f *fullDuplexUnreliableWire) Recv(ctx context.Context, payload []byte) (n 
 		defer close(ch)
 		n, err = c.Read(payload)
 		if err == nil {
-			f.capture(ctx, payload[:n])
+			f.capture(payload[:n])
 		}
 	}()
 
-	// wait for ch, or for ctx.Done() and cancel operation
+	// wait for ch or for ctx.Done() and cancel the operation
 	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, f.ctx)
 	defer cancel()
 	select {
@@ -208,32 +204,25 @@ func (f *fullDuplexUnreliableWire) Recv(ctx context.Context, payload []byte) (n 
 }
 
 func (f *fullDuplexUnreliableWire) Close() error {
-	// cancel ctx and wait threads
+	// cancel ctx
 	var cancel context.CancelFunc
 	cancel, f.cancelCtx = f.cancelCtx, nil
 	if cancel == nil {
 		return nil
 	}
 	cancel()
-	f.wg.Wait()
 
-	// close channels
+	// close capture channel and wait thread
 	if f.captureCh != nil {
 		close(f.captureCh)
-		for range f.captureCh {
-		}
 	}
+	f.wg.Wait()
 
 	return f.conn.Close()
 }
 
-func (f *fullDuplexUnreliableWire) capture(ctx context.Context, b []byte) {
-	if f.captureCh == nil {
-		return
-	}
-	select {
-	case <-ctx.Done():
-	case <-f.ctx.Done():
-	case f.captureCh <- b:
+func (f *fullDuplexUnreliableWire) capture(b []byte) {
+	if f.captureCh != nil {
+		f.captureCh <- b
 	}
 }

@@ -148,9 +148,9 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 		forwardingTable.StoreRoute(Internet(), intf)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	layerCtx, cancel := context.WithCancel(context.Background())
 	return &layer{
-		ctx:             ctx,
+		ctx:             layerCtx,
 		cancelCtx:       cancel,
 		conf:            &conf,
 		intfs:           intfs,

@@ -115,9 +115,9 @@ func NewInterface(ctx context.Context, conf InterfaceConfig) (Interface, error) 
 	if err != nil {
 		return nil, fmt.Errorf("error creating card: %w", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	intfCtx, cancel := context.WithCancel(context.Background())
 	intf := &interfaceImpl{
-		ctx:       ctx,
+		ctx:       intfCtx,
 		cancelCtx: cancel,
 		conf:      &conf,
 		l:         logrus.WithField("interface_ip_address", conf.IPAddress),
@@ -144,7 +144,7 @@ func (i *interfaceImpl) startThreads() {
 			case <-ctxDone:
 				return
 			case frame := <-i.card.Recv():
-				i.decap(frame)
+				i.decapAndRecv(frame)
 			}
 		}
 	}()
@@ -281,7 +281,7 @@ func (i *interfaceImpl) Recv() <-chan *gplayers.IPv4 {
 	return i.in
 }
 
-func (i *interfaceImpl) decap(frame *gplayers.Ethernet) {
+func (i *interfaceImpl) decapAndRecv(frame *gplayers.Ethernet) {
 	l := i.l.
 		WithField("frame", frame)
 
@@ -289,7 +289,7 @@ func (i *interfaceImpl) decap(frame *gplayers.Ethernet) {
 	err := func() error {
 		switch frame.EthernetType {
 		case gplayers.EthernetTypeARP:
-			return i.decapARP(frame)
+			return i.decapARPAndReply(frame)
 		case gplayers.EthernetTypeIPv4:
 			// deserialize datagram
 			var err error
@@ -319,17 +319,21 @@ func (i *interfaceImpl) decap(frame *gplayers.Ethernet) {
 	}
 
 	if datagram != nil {
-		select {
-		case <-i.ctx.Done():
-			l.
-				WithError(i.ctx.Err()).
-				Error("interface context done while receiving datagram")
-		case i.in <- datagram:
-		}
+		i.recv(l, datagram)
 	}
 }
 
-func (i *interfaceImpl) decapARP(frame *gplayers.Ethernet) error {
+func (i *interfaceImpl) recv(l logrus.FieldLogger, datagram *gplayers.IPv4) {
+	select {
+	case <-i.ctx.Done():
+		l.
+			WithError(i.ctx.Err()).
+			Error("interface context done while receiving datagram")
+	case i.in <- datagram:
+	}
+}
+
+func (i *interfaceImpl) decapARPAndReply(frame *gplayers.Ethernet) error {
 	// deserialize arp
 	pkt := gopacket.NewPacket(frame.Payload, gplayers.LayerTypeARP, gopacket.Lazy)
 	arp := pkt.Layer(gplayers.LayerTypeARP).(*gplayers.ARP)
@@ -355,6 +359,12 @@ func (i *interfaceImpl) decapARP(frame *gplayers.Ethernet) error {
 	}
 
 	return nil
+}
+
+func (i *interfaceImpl) notifyARPEvent() {
+	i.arpEventsMu.Lock()
+	i.arpEvents.Broadcast()
+	i.arpEventsMu.Unlock()
 }
 
 func (i *interfaceImpl) Close() error {
@@ -402,10 +412,4 @@ func (i *interfaceImpl) BroadcastIPAddress() gopacket.Endpoint {
 
 func (i *interfaceImpl) Card() link.EthernetPort {
 	return i.card
-}
-
-func (i *interfaceImpl) notifyARPEvent() {
-	i.arpEventsMu.Lock()
-	i.arpEvents.Broadcast()
-	i.arpEventsMu.Unlock()
 }
