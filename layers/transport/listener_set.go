@@ -15,7 +15,6 @@ import (
 
 type (
 	listenerSet struct {
-		ctx          context.Context
 		networkLayer network.Layer
 		factory      protocolFactory
 
@@ -29,13 +28,8 @@ type (
 	}
 )
 
-func newListenerSet(
-	ctx context.Context,
-	networkLayer network.Layer,
-	factory protocolFactory,
-) *listenerSet {
+func newListenerSet(networkLayer network.Layer, factory protocolFactory) *listenerSet {
 	return &listenerSet{
-		ctx:          ctx,
 		networkLayer: networkLayer,
 		factory:      factory,
 
@@ -72,7 +66,7 @@ func (s *listenerSet) listen(address string) (*listener, error) {
 	}
 
 	// allocate port
-	l := newListener(s.ctx, s.networkLayer, s.factory, port, ipAddress)
+	l := newListener(s, port, ipAddress)
 	s.listeners[port] = l
 
 	return l, nil
@@ -84,7 +78,7 @@ func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error
 	if err != nil {
 		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
 	}
-	if err := l.Close(); err != nil {
+	if err := l.stopListening(); err != nil {
 		return nil, fmt.Errorf("error closing local port for accepting connections: %w", err)
 	}
 
@@ -121,4 +115,12 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 	if c := l.findConnOrCreatePending(addr{srcPort, srcIPAddress}); c != nil {
 		c.recv(segment)
 	}
+}
+
+func (s *listenerSet) deleteListener(port uint16) {
+	s.listenersMu.Lock()
+	if s.listeners != nil {
+		delete(s.listeners, port)
+	}
+	s.listenersMu.Unlock()
 }
