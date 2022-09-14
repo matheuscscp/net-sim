@@ -125,8 +125,15 @@ func TestUDPClientServer(t *testing.T) {
 	require.NoError(t, client.SetReadDeadline(time.Now().Add(10*time.Millisecond)))
 	n, err = client.Read(readBuf)
 	assert.Error(t, err)
-	assert.Equal(t, transport.ErrTimeout, err)
-	assert.Equal(t, 0, n)
+	assert.Equal(t, transport.ErrDeadlineExceeded, err)
+	assert.Zero(t, n)
+
+	// test SetWriteDeadline
+	require.NoError(t, client.SetWriteDeadline(time.Now()))
+	n, err = client.Write(helloPayload)
+	assert.Error(t, err)
+	assert.Equal(t, transport.ErrDeadlineExceeded, err)
+	assert.Zero(t, n)
 
 	for _, c := range []io.Closer{serverConn, client, server} {
 		assert.NoError(t, c.Close())

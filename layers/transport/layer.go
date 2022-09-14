@@ -76,7 +76,7 @@ var (
 	ErrAllPortsAlreadyInUse = errors.New("all ports already in use")
 	ErrListenerClosed       = fmt.Errorf("listener closed (os error msg: %s)", useOfClosedConn)
 	ErrConnClosed           = fmt.Errorf("connection closed (os error msg: %s)", useOfClosedConn)
-	ErrTimeout              = errors.New("timeout")
+	ErrDeadlineExceeded     = errors.New("deadline exceeded")
 )
 
 // NewLayer creates the concrete implementation of Layer and
@@ -86,8 +86,8 @@ func NewLayer(networkLayer network.Layer) Layer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	l := &layer{
-		tcp:       newListenerSet(ctx, networkLayer, &tcp{}),
-		udp:       newListenerSet(ctx, networkLayer, &udp{}),
+		tcp:       newListenerSet(networkLayer, &tcp{}),
+		udp:       newListenerSet(networkLayer, &udp{}),
 		cancelCtx: cancel,
 		giantBuf:  make(chan *gplayers.IPv4, demuxThreads*channelSize),
 	}

@@ -6,7 +6,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/matheuscscp/net-sim/layers/network"
+	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"
 	"github.com/hashicorp/go-multierror"
@@ -18,12 +18,13 @@ type (
 	}
 
 	listener struct {
-		ctx          context.Context
-		cancelCtx    context.CancelFunc
-		networkLayer network.Layer
-		factory      protocolFactory
-		port         uint16
-		ipAddress    *gopacket.Endpoint
+		ctx             context.Context
+		cancelCtx       context.CancelFunc
+		acceptCtx       context.Context
+		cancelAcceptCtx context.CancelFunc
+		s               *listenerSet
+		port            uint16
+		ipAddress       *gopacket.Endpoint
 
 		connsMu, pendingConnsMu sync.RWMutex
 		conns, pendingConns     map[addr]conn
@@ -36,22 +37,22 @@ var (
 )
 
 func newListener(
-	ctx context.Context,
-	networkLayer network.Layer,
-	factory protocolFactory,
+	s *listenerSet,
 	port uint16,
 	ipAddress *gopacket.Endpoint,
 ) *listener {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
+	acceptCtx, cancelAcceptCtx := context.WithCancel(ctx)
 	l := &listener{
-		ctx:          ctx,
-		cancelCtx:    cancel,
-		networkLayer: networkLayer,
-		factory:      factory,
-		port:         port,
-		ipAddress:    ipAddress,
-		conns:        make(map[addr]conn),
-		pendingConns: make(map[addr]conn),
+		ctx:             ctx,
+		cancelCtx:       cancel,
+		acceptCtx:       acceptCtx,
+		cancelAcceptCtx: cancelAcceptCtx,
+		s:               s,
+		port:            port,
+		ipAddress:       ipAddress,
+		conns:           make(map[addr]conn),
+		pendingConns:    make(map[addr]conn),
 	}
 	l.pendingConnsCond = sync.NewCond(&l.pendingConnsMu)
 	return l
@@ -67,7 +68,7 @@ func (l *listener) Accept() (net.Conn, error) {
 		return nil, fmt.Errorf("error waiting for pending connection: %w", err)
 	}
 
-	if err := c.handshakeAccept(l.ctx); err != nil {
+	if err := c.handshakeAccept(l.acceptCtx); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("error accepting protocol handshake: %w", err)
 	}
@@ -101,27 +102,58 @@ func (l *listener) waitForPendingConnAndMoveToConns() (conn, error) {
 
 	// add to accepted conns
 	l.connsMu.Lock()
+	defer l.connsMu.Unlock()
+	if l.conns == nil {
+		return nil, ErrListenerClosed
+	}
 	l.conns[a] = c
-	l.connsMu.Unlock()
 
 	return c, nil
 }
 
 func (l *listener) Close() error {
-	// cancel ctx
-	var cancel context.CancelFunc
-	cancel, l.cancelCtx = l.cancelCtx, nil
-	if cancel == nil {
+	if err := l.stopListening(); err != nil {
+		return err
+	}
+
+	// delete the conns map so new conns are dropped
+	var conns map[addr]conn
+	l.connsMu.Lock()
+	conns, l.conns = l.conns, nil
+	if conns == nil {
+		l.connsMu.Unlock()
 		return nil
 	}
-	cancel()
+	l.connsMu.Unlock()
 
+	l.cancelCtx()
+
+	// close conns
+	var err error
+	for addr, conn := range conns {
+		if cErr := conn.Close(); cErr != nil {
+			err = multierror.Append(err, fmt.Errorf("error closing connection to %s: %w", addr.String(), cErr))
+		}
+	}
+
+	l.s.deleteListener(l.port)
+
+	return err
+}
+
+func (l *listener) stopListening() error {
 	// delete the pendingConns map so new conns are dropped
 	var pendingConns map[addr]conn
 	l.pendingConnsMu.Lock()
 	pendingConns, l.pendingConns = l.pendingConns, nil
+	if pendingConns == nil {
+		l.pendingConnsMu.Unlock()
+		return nil
+	}
 	l.pendingConnsCond.Broadcast()
 	l.pendingConnsMu.Unlock()
+
+	l.cancelAcceptCtx()
 
 	// close pending conns
 	var err error
@@ -149,31 +181,44 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
-	c := l.findConnOrCreate(addr{port, *ipAddress})
+	c, err := l.findConnOrCreate(addr{port, *ipAddress})
+	if err != nil {
+		return nil, err
+	}
 
 	// handshake
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, l.ctx)
+	defer cancel()
 	if err := c.handshakeDial(ctx); err != nil {
 		return nil, fmt.Errorf("error dialing protocol handshake: %w", err)
 	}
 	return c, nil
 }
 
-func (l *listener) findConnOrCreate(remoteAddr addr) conn {
+func (l *listener) findConnOrCreate(remoteAddr addr) (conn, error) {
 	l.connsMu.Lock()
 	defer l.connsMu.Unlock()
 
+	if l.conns == nil {
+		return nil, ErrListenerClosed
+	}
+
 	c, ok := l.conns[remoteAddr]
 	if !ok {
-		c = l.factory.newConn(l, remoteAddr)
+		c = l.s.factory.newConn(l, remoteAddr)
 		l.conns[remoteAddr] = c
 	}
-	return c
+	return c, nil
 }
 
 func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	// check for an already existing conn (this is the most common case
 	// and therefore should be optimized by using an RWMutex)
 	l.connsMu.RLock()
+	if l.conns == nil {
+		l.connsMu.RUnlock()
+		return nil
+	}
 	c, ok := l.conns[remoteAddr]
 	l.connsMu.RUnlock()
 	if ok {
@@ -188,6 +233,10 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	// because between requesting and acquiring the pendingConns
 	// lock it's possible that accept() added our conn to l.conns
 	l.connsMu.RLock()
+	if l.conns == nil {
+		l.connsMu.RUnlock()
+		return nil
+	}
 	c, ok = l.conns[remoteAddr]
 	l.connsMu.RUnlock()
 	if ok {
@@ -195,19 +244,27 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	}
 
 	// no already existing conn, and we hold the pendingConns lock.
-	// time to create a pending conn, but, first, check if listener
-	// was Close()d
+	// time to create a pending conn, but first check if stopListening()
+	// was called
 	if l.pendingConns == nil {
-		return nil // drop rule: port was Close()d (stopped listening)
+		return nil // drop rule: stopListening() was called
 	}
 
 	// port is listening. find or create a new pending conn
 	c, ok = l.pendingConns[remoteAddr]
 	if !ok {
-		c = l.factory.newConn(l, remoteAddr)
+		c = l.s.factory.newConn(l, remoteAddr)
 		l.pendingConns[remoteAddr] = c
 		l.pendingConnsCond.Broadcast() // unblock Accept()
 	}
 
 	return c
+}
+
+func (l *listener) deleteConn(remoteAddr addr) {
+	l.connsMu.Lock()
+	if l.conns != nil {
+		delete(l.conns, remoteAddr)
+	}
+	l.connsMu.Unlock()
 }

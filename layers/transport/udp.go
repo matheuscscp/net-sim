@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -28,6 +29,10 @@ type (
 		inBack       *udpQueueElem
 		inCond       *sync.Cond
 		readDeadline time.Time
+
+		outMu         sync.Mutex
+		outCond       *sync.Cond
+		writeDeadline time.Time
 	}
 
 	udpQueueElem struct {
@@ -38,101 +43,102 @@ type (
 
 func (*udp) newConn(l *listener, remoteAddr addr) conn {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &udpConn{
+	u := &udpConn{
 		ctx:        ctx,
 		cancelCtx:  cancel,
 		l:          l,
 		remoteAddr: remoteAddr,
 	}
-	c.inCond = sync.NewCond(&c.inMu)
-	return c
+	u.inCond = sync.NewCond(&u.inMu)
+	u.outCond = sync.NewCond(&u.outMu)
+	return u
 }
 
 func (*udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return DeserializeUDPSegment(datagram)
 }
 
-func (c *udpConn) handshakeDial(ctx context.Context) error {
+func (u *udpConn) handshakeDial(ctx context.Context) error {
 	return nil // no-op
 }
 
-func (c *udpConn) handshakeAccept(ctx context.Context) error {
+func (u *udpConn) handshakeAccept(ctx context.Context) error {
 	return nil // no-op
 }
 
-func (c *udpConn) recv(segment gopacket.TransportLayer) {
+func (u *udpConn) recv(segment gopacket.TransportLayer) {
 	e := &udpQueueElem{payload: segment.LayerPayload()}
 
-	c.inMu.Lock()
-	defer c.inMu.Unlock()
+	u.inMu.Lock()
+	defer u.inMu.Unlock()
 
-	if c.isClosed() {
+	if u.isClosed() {
 		return
 	}
 
-	if c.inBack == nil {
-		c.inFront = e
-		c.inBack = e
+	if u.inBack == nil {
+		u.inFront = e
+		u.inBack = e
 	} else {
-		c.inBack.next = e
-		c.inBack = e
+		u.inBack.next = e
+		u.inBack = e
 	}
-	c.inCond.Signal()
+	u.inCond.Signal()
 }
 
 // Read blocks waiting for one UDP segment. b must have enough space for
 // the whole UDP segment payload, otherwise the exceeding part will be
 // lost.
-func (c *udpConn) Read(b []byte) (n int, err error) {
-	e, err := c.waitForQueueElem()
+func (u *udpConn) Read(b []byte) (n int, err error) {
+	e, err := u.waitForQueueElem()
 	if err != nil {
 		return 0, err
 	}
 	return copy(b, e.payload), nil
 }
 
-func (c *udpConn) waitForQueueElem() (*udpQueueElem, error) {
-	c.inMu.Lock()
-	defer c.inMu.Unlock()
+func (u *udpConn) waitForQueueElem() (*udpQueueElem, error) {
+	u.inMu.Lock()
+	defer u.inMu.Unlock()
 
 	// wait until one of these happens: data becomes available,
 	// the conn is Close()d, or the deadline is exceeded
-	if err := c.checkReadCondition(); err != nil {
+	if err := u.checkReadError(); err != nil {
 		return nil, err
 	}
-	for c.inFront == nil {
-		c.inCond.Wait()
-		if err := c.checkReadCondition(); err != nil {
+	for u.inFront == nil {
+		u.inCond.Wait()
+		if err := u.checkReadError(); err != nil {
 			return nil, err
 		}
 	}
 
 	// data is now available, pop the queue
-	var e *udpQueueElem
-	e, c.inFront = c.inFront, c.inFront.next
-	e.next = nil
-	if c.inFront == nil {
-		c.inBack = nil
+	var elem *udpQueueElem
+	elem, u.inFront = u.inFront, u.inFront.next
+	elem.next = nil
+	if u.inFront == nil {
+		u.inBack = nil
 	}
-	return e, nil
+	return elem, nil
 }
 
-func (c *udpConn) checkReadCondition() error {
+func (u *udpConn) checkReadError() error {
 	// check closed
-	if c.isClosed() {
+	if u.isClosed() {
 		return ErrConnClosed
 	}
 
 	// check deadline
-	if !c.readDeadline.IsZero() && c.readDeadline.Before(time.Now()) {
-		return ErrTimeout
+	if !u.readDeadline.IsZero() && u.readDeadline.Before(time.Now()) {
+		return ErrDeadlineExceeded
 	}
 
 	return nil
 }
 
-func (c *udpConn) Write(b []byte) (n int, err error) {
-	if c.isClosed() {
+func (u *udpConn) Write(b []byte) (n int, err error) {
+	if u.isClosed() {
 		return 0, ErrConnClosed
 	}
 
@@ -144,58 +150,104 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 		return 0, fmt.Errorf("payload is larger than transport layer UDP MTU (%d)", UDPMTU)
 	}
 
-	// send
+	// craft headers and find interface
 	datagramHeader := &gplayers.IPv4{
-		DstIP:    c.remoteAddr.ipAddress.Raw(),
+		DstIP:    u.remoteAddr.ipAddress.Raw(),
 		Protocol: gplayers.IPProtocolUDP,
 	}
 	segment := &gplayers.UDP{
 		BaseLayer: gplayers.BaseLayer{
 			Payload: b,
 		},
-		SrcPort: gplayers.UDPPort(c.l.port),
-		DstPort: gplayers.UDPPort(c.remoteAddr.port),
+		SrcPort: gplayers.UDPPort(u.l.port),
+		DstPort: gplayers.UDPPort(u.remoteAddr.port),
 		Length:  uint16(len(b) + UDPHeaderLength),
 	}
-	if c.l.ipAddress != nil {
-		datagramHeader.SrcIP = c.l.ipAddress.Raw()
+	if u.l.ipAddress != nil {
+		datagramHeader.SrcIP = u.l.ipAddress.Raw()
 	}
-	intf, err := c.l.networkLayer.FindInterfaceForHeader(datagramHeader)
+	intf, err := u.l.s.networkLayer.FindInterfaceForHeader(datagramHeader)
 	if err != nil {
 		return 0, fmt.Errorf("error finding interface for datagram header: %w", err)
 	}
-	if err := intf.SendTransportSegment(c.ctx, datagramHeader, segment); err != nil {
+
+	// start deadline thread
+	ctx, cancel := context.WithCancel(u.ctx)
+	var wg sync.WaitGroup
+	defer func() {
+		cancel()
+		u.outMu.Lock()
+		u.outCond.Broadcast()
+		u.outMu.Unlock()
+		wg.Wait()
+	}()
+	wg.Add(1)
+	var deadlineExceeded bool
+	go func() {
+		defer func() {
+			cancel()
+			wg.Done()
+		}()
+
+		u.outMu.Lock()
+		for ctx.Err() == nil && !u.writeDeadlineExceeded() {
+			u.outCond.Wait()
+		}
+		u.outMu.Unlock()
+
+		if ctx.Err() == nil {
+			deadlineExceeded = true
+		}
+	}()
+
+	// send
+	if u.writeDeadlineExceeded() {
+		return 0, ErrDeadlineExceeded
+	}
+	if err := intf.SendTransportSegment(ctx, datagramHeader, segment); err != nil {
+		if deadlineExceeded {
+			return 0, ErrDeadlineExceeded
+		}
+		if errors.Is(err, context.Canceled) {
+			return 0, ErrConnClosed
+		}
 		return 0, fmt.Errorf("error sending transport segment: %w", err)
 	}
 
 	return len(b), nil
 }
 
-func (c *udpConn) Close() error {
+func (u *udpConn) writeDeadlineExceeded() bool {
+	return !u.writeDeadline.IsZero() && u.writeDeadline.Before(time.Now())
+}
+
+func (u *udpConn) Close() error {
 	// remove conn from listener so arriving segments are
 	// not directed to this conn anymore
-	c.l.connsMu.Lock()
-	delete(c.l.conns, c.remoteAddr)
-	c.l.connsMu.Unlock()
+	u.l.deleteConn(u.remoteAddr)
 
-	// cancel ctx
+	// cancel ctx (unblock writers)
 	var cancel context.CancelFunc
-	cancel, c.cancelCtx = c.cancelCtx, nil
+	cancel, u.cancelCtx = u.cancelCtx, nil
 	if cancel == nil {
 		return nil
 	}
 	cancel()
-	c.inCond.Broadcast()
+
+	// unblock readers
+	u.inMu.Lock()
+	u.inCond.Broadcast()
+	u.inMu.Unlock()
 
 	return nil
 }
 
-func (c *udpConn) LocalAddr() net.Addr {
-	return c.l.Addr()
+func (u *udpConn) LocalAddr() net.Addr {
+	return u.l.Addr()
 }
 
-func (c *udpConn) RemoteAddr() net.Addr {
-	a := c.remoteAddr
+func (u *udpConn) RemoteAddr() net.Addr {
+	a := u.remoteAddr
 	return &a
 }
 
@@ -238,8 +290,30 @@ func (c *udpConn) SetReadDeadline(d time.Time) error {
 	return nil
 }
 
+// SetWriteDeadline sets the write deadline. This method
+// starts a thread that only returns when the deadline
+// is reached (or when the connection is Close()d), so
+// calling it with a time point that is too distant in
+// the future is not a good idea.
 func (c *udpConn) SetWriteDeadline(d time.Time) error {
-	return nil // no-op
+	c.outMu.Lock()
+	c.writeDeadline = d
+	c.outMu.Unlock()
+
+	// start thread to wait until either the deadline or until
+	// the connection context is done and then notify all blocked
+	// writers
+	go func() {
+		// wait
+		ctx, cancel := context.WithDeadline(c.ctx, d)
+		defer cancel()
+
+		// notify
+		<-ctx.Done()
+		c.outCond.Broadcast()
+	}()
+
+	return nil
 }
 
 func (c *udpConn) isClosed() bool {
