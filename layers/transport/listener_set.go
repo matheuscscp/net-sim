@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/matheuscscp/net-sim/layers/network"
 
 	"github.com/google/gopacket"
@@ -46,6 +47,10 @@ func (s *listenerSet) listen(address string) (*listener, error) {
 
 	s.listenersMu.Lock()
 	defer s.listenersMu.Unlock()
+
+	if s.listeners == nil {
+		return nil, ErrProtocolClosed
+	}
 
 	// if port is zero, choose a free port
 	if port == 0 {
@@ -101,13 +106,17 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 	// find listener
 	dstPort, dstIPAddress := portFromEndpoint(flow.Dst()), gplayers.NewIPEndpoint(datagram.DstIP)
 	s.listenersMu.RLock()
+	if s.listeners == nil {
+		s.listenersMu.RUnlock()
+		return
+	}
 	l, ok := s.listeners[dstPort]
 	s.listenersMu.RUnlock()
 	if !ok {
-		return // drop rule: port is not listening
+		return
 	}
 	if !l.matchesDstIPAddress(dstIPAddress) {
-		return // drop rule: port is listening but dst IP address does not match the IP bound by the port
+		return
 	}
 
 	// find conn and receive
@@ -123,4 +132,25 @@ func (s *listenerSet) deleteListener(port uint16) {
 		delete(s.listeners, port)
 	}
 	s.listenersMu.Unlock()
+}
+
+func (s *listenerSet) Close() error {
+	// delete the listeners map so new listen() calls fail
+	var listeners map[uint16]*listener
+	s.listenersMu.Lock()
+	listeners, s.listeners = s.listeners, nil
+	if listeners == nil {
+		s.listenersMu.Unlock()
+		return nil
+	}
+	s.listenersMu.Unlock()
+
+	// close listeners
+	var err error
+	for port, lis := range listeners {
+		if lErr := lis.Close(); lErr != nil {
+			err = multierror.Append(err, fmt.Errorf("error closing connection to %d: %w", port, lErr))
+		}
+	}
+	return err
 }

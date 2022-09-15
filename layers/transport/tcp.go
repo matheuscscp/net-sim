@@ -29,46 +29,46 @@ func (*tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return nil, nil // TODO
 }
 
-func (c *tcpConn) handshakeDial(ctx context.Context) error {
+func (t *tcpConn) handshakeDial(ctx context.Context) error {
 	return nil // TODO
 }
 
-func (c *tcpConn) handshakeAccept(ctx context.Context) error {
+func (t *tcpConn) handshakeAccept(ctx context.Context) error {
 	return nil // TODO
 }
 
-func (c *tcpConn) recv(segment gopacket.TransportLayer) {
+func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 	// TODO
 }
 
-func (c *tcpConn) Read(b []byte) (n int, err error) {
+func (t *tcpConn) Read(b []byte) (n int, err error) {
 	return 0, nil // TODO
 }
 
-func (c *tcpConn) Write(b []byte) (n int, err error) {
+func (t *tcpConn) Write(b []byte) (n int, err error) {
 	return 0, nil // TODO
 }
 
-func (c *tcpConn) Close() error {
+func (t *tcpConn) Close() error {
 	return nil // TODO
 }
 
-func (c *tcpConn) LocalAddr() net.Addr {
+func (t *tcpConn) LocalAddr() net.Addr {
 	return nil // TODO
 }
 
-func (c *tcpConn) RemoteAddr() net.Addr {
+func (t *tcpConn) RemoteAddr() net.Addr {
 	return nil // TODO
 }
 
-func (c *tcpConn) SetDeadline(d time.Time) error {
+func (t *tcpConn) SetDeadline(d time.Time) error {
 	return nil // TODO
 }
 
-func (c *tcpConn) SetReadDeadline(d time.Time) error {
+func (t *tcpConn) SetReadDeadline(d time.Time) error {
 	return nil // TODO
 }
 
-func (c *tcpConn) SetWriteDeadline(d time.Time) error {
+func (t *tcpConn) SetWriteDeadline(d time.Time) error {
 	return nil // TODO
 }

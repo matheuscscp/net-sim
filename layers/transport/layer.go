@@ -2,17 +2,14 @@ package transport
 
 import (
 	"context"
-	"encoding/binary"
-	"errors"
 	"fmt"
+	"io"
 	"net"
-	"strconv"
-	"strings"
 	"sync"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/matheuscscp/net-sim/layers/network"
 
-	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 )
 
@@ -64,19 +61,6 @@ type (
 		wg        sync.WaitGroup
 		giantBuf  chan *gplayers.IPv4
 	}
-)
-
-const (
-	useOfClosedConn = "use of closed network connection"
-)
-
-var (
-	ErrInvalidNetwork       = errors.New("invalid network")
-	ErrPortAlreadyInUse     = errors.New("port already in use")
-	ErrAllPortsAlreadyInUse = errors.New("all ports already in use")
-	ErrListenerClosed       = fmt.Errorf("listener closed (os error msg: %s)", useOfClosedConn)
-	ErrConnClosed           = fmt.Errorf("connection closed (os error msg: %s)", useOfClosedConn)
-	ErrDeadlineExceeded     = errors.New("deadline exceeded")
 )
 
 // NewLayer creates the concrete implementation of Layer and
@@ -167,42 +151,12 @@ func (l *layer) Close() error {
 	for range l.giantBuf {
 	}
 
-	return nil
-}
-
-// IsUseOfClosedConn tells whether the error is due to the port/connection
-// being closed.
-func IsUseOfClosedConn(err error) bool {
-	return strings.Contains(err.Error(), useOfClosedConn)
-}
-
-func parseHostPort(address string, needIP bool) (uint16, *gopacket.Endpoint, error) {
-	host, p, err := net.SplitHostPort(address)
-	if err != nil {
-		return 0, nil, fmt.Errorf("error splitting in host:port: %w", err)
-	}
-	port, err := strconv.Atoi(p)
-	if err != nil {
-		return 0, nil, fmt.Errorf("error parsing port number: %w", err)
-	}
-	if port < 0 || 65535 < port {
-		return 0, nil, errors.New("port number must be in range [0, 65535]")
-	}
-	var ipAddress *gopacket.Endpoint
-	if len(host) > 0 {
-		ip := net.ParseIP(host)
-		if ip == nil {
-			return 0, nil, fmt.Errorf("unknown error parsing host '%s' as IP address", host)
+	// close protocols
+	var err error
+	for _, c := range []io.Closer{l.tcp, l.udp} {
+		if cErr := c.Close(); cErr != nil {
+			err = multierror.Append(err, fmt.Errorf("error closing protocol: %w", cErr))
 		}
-		ep := gplayers.NewIPEndpoint(ip)
-		ipAddress = &ep
 	}
-	if needIP && ipAddress == nil {
-		return 0, nil, errors.New("host cannot be empty")
-	}
-	return uint16(port), ipAddress, nil
-}
-
-func portFromEndpoint(ep gopacket.Endpoint) uint16 {
-	return binary.BigEndian.Uint16(ep.Raw())
+	return err
 }

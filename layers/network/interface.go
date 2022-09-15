@@ -319,16 +319,13 @@ func (i *interfaceImpl) decapAndRecv(frame *gplayers.Ethernet) {
 	}
 
 	if datagram != nil {
-		i.recv(l, datagram)
+		i.recv(datagram)
 	}
 }
 
-func (i *interfaceImpl) recv(l logrus.FieldLogger, datagram *gplayers.IPv4) {
+func (i *interfaceImpl) recv(datagram *gplayers.IPv4) {
 	select {
 	case <-i.ctx.Done():
-		l.
-			WithError(i.ctx.Err()).
-			Error("interface context done while receiving datagram")
 	case i.in <- datagram:
 	}
 }
