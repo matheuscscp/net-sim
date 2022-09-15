@@ -91,13 +91,13 @@ func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort
 
 func (e *ethernetPort) startThreads() {
 	// send
-	ectxDone := e.ctx.Done()
+	ctxDone := e.ctx.Done()
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
 		for {
 			select {
-			case <-ectxDone:
+			case <-ctxDone:
 				return
 			case frame := <-e.out:
 				l := e.l.
@@ -231,10 +231,6 @@ func (e *ethernetPort) decapAndRecv(frameBuf []byte) {
 func (e *ethernetPort) recv(frame *gplayers.Ethernet) {
 	select {
 	case <-e.ctx.Done():
-		e.l.
-			WithError(e.ctx.Err()).
-			WithField("frame", frame).
-			Error("port context done while receiving frame")
 	case e.in <- frame:
 	}
 }

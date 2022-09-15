@@ -6,8 +6,6 @@ import (
 	"net"
 	"sync"
 
-	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
-
 	"github.com/google/gopacket"
 	"github.com/hashicorp/go-multierror"
 )
@@ -18,8 +16,6 @@ type (
 	}
 
 	listener struct {
-		ctx             context.Context
-		cancelCtx       context.CancelFunc
 		acceptCtx       context.Context
 		cancelAcceptCtx context.CancelFunc
 		s               *listenerSet
@@ -41,11 +37,8 @@ func newListener(
 	port uint16,
 	ipAddress *gopacket.Endpoint,
 ) *listener {
-	ctx, cancel := context.WithCancel(context.Background())
-	acceptCtx, cancelAcceptCtx := context.WithCancel(ctx)
+	acceptCtx, cancelAcceptCtx := context.WithCancel(context.Background())
 	l := &listener{
-		ctx:             ctx,
-		cancelCtx:       cancel,
 		acceptCtx:       acceptCtx,
 		cancelAcceptCtx: cancelAcceptCtx,
 		s:               s,
@@ -126,8 +119,6 @@ func (l *listener) Close() error {
 	}
 	l.connsMu.Unlock()
 
-	l.cancelCtx()
-
 	// close conns
 	var err error
 	for addr, conn := range conns {
@@ -187,8 +178,6 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	}
 
 	// handshake
-	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, l.ctx)
-	defer cancel()
 	if err := c.handshakeDial(ctx); err != nil {
 		return nil, fmt.Errorf("error dialing protocol handshake: %w", err)
 	}
@@ -247,7 +236,7 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	// time to create a pending conn, but first check if stopListening()
 	// was called
 	if l.pendingConns == nil {
-		return nil // drop rule: stopListening() was called
+		return nil
 	}
 
 	// port is listening. find or create a new pending conn
