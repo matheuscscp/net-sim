@@ -1,6 +1,6 @@
-# start command: ./net-sim http-proxy forward config/http-forward-proxy.yml \
-#   1.1.1.2:80 google.com 127.0.0.1:8081 \
-#   1.1.1.2:80 matheuspimenta.com 127.0.0.1:8081
+# start command: ./net-sim http-proxy config/http-forward-proxy.yml \
+#   '' google.com host::8081 \
+#   '' matheuspimenta.com host::8082
 
 defaultRouteInterface: eth0
 interfaces:

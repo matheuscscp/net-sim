@@ -1,4 +1,4 @@
-# start command: ./net-sim tcp-proxy reverse config/tcp-reverse-proxy.yml 127.0.0.1:8080 1.1.1.2:80
+# start command: ./net-sim tcp-proxy config/tcp-reverse-proxy.yml host::8080 1.1.1.2:80
 
 defaultRouteInterface: eth0
 interfaces:

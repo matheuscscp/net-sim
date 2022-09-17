@@ -3,13 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 
+	"github.com/matheuscscp/net-sim/config"
 	"github.com/matheuscscp/net-sim/layers/link"
 
-	gplayers "github.com/google/gopacket/layers"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var switchCmd = &cobra.Command{
@@ -18,13 +16,9 @@ var switchCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// read config
-		b, err := os.ReadFile(args[0])
-		if err != nil {
-			return fmt.Errorf("error reading yaml switch config file: %w", err)
-		}
 		var conf link.SwitchConfig
-		if err := yaml.Unmarshal(b, &conf); err != nil {
-			return fmt.Errorf("error decoding switch config from yaml: %w", err)
+		if err := config.ReadYAML(args[0], &conf); err != nil {
+			return fmt.Errorf("error reading yaml router config file: %w", err)
 		}
 
 		// start switch with cancel on interruption signals
@@ -35,11 +29,7 @@ var switchCmd = &cobra.Command{
 			return err
 		}
 
-		waitClose(func(portBuffer <-chan *gplayers.Ethernet) {
-			// drain remaining frames
-			for range portBuffer {
-			}
-		})
+		waitClose(nil)
 		return nil
 	},
 }

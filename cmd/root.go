@@ -5,13 +5,22 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "net-sim",
 	Short: "net-sim is a networking simulator for learning purposes",
+}
+
+func init() {
+	logrus.SetFormatter(&logrus.TextFormatter{
+		TimestampFormat: time.RFC3339,
+		FullTimestamp:   true,
+	})
 }
 
 func Execute() error {

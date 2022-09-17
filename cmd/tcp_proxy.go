@@ -2,96 +2,87 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
 
+	"github.com/matheuscscp/net-sim/hostnetwork"
 	"github.com/matheuscscp/net-sim/layers/network"
 	"github.com/matheuscscp/net-sim/layers/transport"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var (
 	tcpProxyCmd = &cobra.Command{
-		Use:   "tcp-proxy",
+		Use:   "tcp-proxy <overlay-network-yaml-config-file> <<src-addr> <dst-addr>>...",
 		Short: "Proxy TCP connections between the host network and the overlay network",
-	}
+		Long: `Proxy TCP connections between (src, dst) pairs of addresses of the form:
 
-	tcpProxyReverseCmd = &cobra.Command{
-		Use:   "reverse <overlay-network-yaml-config-file> <<host-addr> <overlay-addr>>...",
-		Short: "Proxy TCP connections from the host network to the overlay network",
-		Args:  cobra.MinimumNArgs(3),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return tcpProxy(args, true /*reverse*/)
-		},
-	}
+[<network>:][<ipv4>]:<port>
 
-	tcpProxyForwardCmd = &cobra.Command{
-		Use:   "forward <overlay-network-yaml-config-file> <<overlay-addr> <host-addr>>...",
-		Short: "Proxy TCP connections from the overlay network to the host network",
-		Args:  cobra.MinimumNArgs(3),
+where <network> can be either overlay (the default) or host.
+
+A listener will be created on the src address and each accepted
+connection will be proxied to the dst address.
+
+The <ipv4> part may be omitted, which defaults to accepting
+connections to any dst IP address for src addresses and to
+using loopback for dst addresses.
+
+A port cannot appear more than once per network across the
+src addresses of the pairs, i.e. a src port can appear at
+most once for the host network and at most once for the
+overlay network.`,
+		Example: `  # will proxy connections on port 1234 on the overlay
+  # network to addr 127.0.0.1:4321 on the host network
+  net-sim tcp-proxy overlay-network.yml :1234 host::4321`,
+		Args: cobra.MinimumNArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return tcpProxy(args, false /*reverse*/)
+			return tcpProxy(args)
 		},
 	}
 )
 
 func init() {
-	tcpProxyCmd.AddCommand(tcpProxyReverseCmd)
-	tcpProxyCmd.AddCommand(tcpProxyForwardCmd)
 	rootCmd.AddCommand(tcpProxyCmd)
 }
 
-func tcpProxy(args []string, reverse bool) error {
-	hostTransport := transport.NewHostLayer()
+func tcpProxy(args []string) error {
+	hostTransport := hostnetwork.NewTransportLayer()
 	ctx, cancel := contextWithCancelOnInterrupt(context.Background())
 	defer cancel()
 
-	// read overlay network config and create
+	// create overlay network and transport from config
 	overlayNetworkConfFile := args[0]
-	b, err := os.ReadFile(overlayNetworkConfFile)
-	if err != nil {
-		return fmt.Errorf("error reading yaml overlay network config file: %w", err)
-	}
-	var overlayNetworkConf network.LayerConfig
-	if err := yaml.Unmarshal(b, &overlayNetworkConf); err != nil {
-		return fmt.Errorf("error decoding overlay network config from yaml: %w", err)
-	}
-	overlayNetwork, err := network.NewLayer(ctx, overlayNetworkConf)
+	overlayNetwork, err := network.NewLayerFromConfigFile(ctx, overlayNetworkConfFile)
 	if err != nil {
 		return err
 	}
 	overlayTransport := transport.NewLayer(overlayNetwork)
 
-	// swap networks for forward proxy mode
-	hostLabel, overlayLabel := "host", "overlay"
-	hostAddrLabel, overlayAddrLabel := fmt.Sprintf("%s_addr", hostLabel), fmt.Sprintf("%s_addr", overlayLabel)
-	if !reverse { // forward
-		hostTransport, overlayTransport = overlayTransport, hostTransport
-		hostAddrLabel, overlayAddrLabel = overlayAddrLabel, hostAddrLabel
-		hostLabel, overlayLabel = overlayLabel, hostLabel
+	// create host and overlay networks api map
+	transportMap := map[string]transport.Layer{
+		host:    hostTransport,
+		overlay: overlayTransport,
 	}
 
-	// create host listeners (bind host addrs)
-	addrs := args[1:]
-	if len(addrs)%2 != 0 {
-		return errors.New("number of specified addresses is not even")
+	// create listeners
+	tcpProxyEntries, err := tcpProxyEntries(args[1:]).entries()
+	if err != nil {
+		return err
 	}
-	listeners := make([]net.Listener, 0, len(addrs)/2)
-	for i := 0; i < len(addrs); i += 2 {
-		hostAddr := addrs[i]
-		l, err := hostTransport.Listen(ctx, transport.TCP, hostAddr)
+	listeners := make([]net.Listener, 0, len(tcpProxyEntries))
+	for i, entry := range tcpProxyEntries {
+		t := transportMap[entry.src.networkOrDefault()]
+		l, err := t.Listen(ctx, transport.TCP, entry.src.hostPort().String())
 		if err != nil {
 			for j := i - 1; 0 <= j; j-- {
 				listeners[j].Close()
 			}
-			return fmt.Errorf("error listening on %s address '%s': %w", hostLabel, hostAddr, err)
+			return fmt.Errorf("error listening on address '%s': %w", entry.src, err)
 		}
 		listeners = append(listeners, l)
 	}
@@ -109,27 +100,29 @@ func tcpProxy(args []string, reverse bool) error {
 	}
 	var wg sync.WaitGroup
 	for i, lis := range listeners {
-		i := i * 2
 		lis := lis
+		entry := tcpProxyEntries[i]
+		dstTransport := transportMap[entry.dst.networkOrDefault()]
+		dstAddr := entry.dst.hostPort().orLoopback().String()
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			hostAddr, overlayAddr := addrs[i], addrs[i+1] // the command usage already swaps these args
 			l := logrus.
-				WithField(hostAddrLabel, hostAddr).
-				WithField(overlayAddrLabel, overlayAddr)
+				WithField("src_addr", entry.src).
+				WithField("dst_addr", entry.dst)
 
 			var wg2 sync.WaitGroup
 			defer wg2.Wait()
 			for {
-				// accept conn on host address
+				// accept conn
 				client, err := lis.Accept()
 				if err != nil {
 					if !transport.IsUseOfClosedConn(err) {
 						l.
 							WithError(err).
-							Errorf("error accepting client connection on %s network", hostLabel)
+							Error("error accepting client connection")
 					}
 					return
 				}
@@ -137,12 +130,12 @@ func tcpProxy(args []string, reverse bool) error {
 					WithField("client_local_addr", client.LocalAddr().String()).
 					WithField("client_remote_addr", client.RemoteAddr().String())
 
-				// connect to overlay address
-				server, err := overlayTransport.Dial(ctx, transport.TCP, overlayAddr)
+				// connect to dst address
+				server, err := dstTransport.Dial(ctx, transport.TCP, dstAddr)
 				if err != nil {
 					l.
 						WithError(err).
-						Errorf("error dialing to server on %s network", overlayLabel)
+						Error("error dialing to server")
 					client.Close()
 					continue // maybe transient
 				}
@@ -172,7 +165,7 @@ func tcpProxy(args []string, reverse bool) error {
 						if err := copyConn(server, client); err != nil {
 							l.
 								WithError(err).
-								Errorf("error copying from client to server (from %s to %s)", hostLabel, overlayLabel)
+								Error("error copying from client to server")
 						}
 					}()
 
@@ -186,7 +179,7 @@ func tcpProxy(args []string, reverse bool) error {
 						if err := copyConn(client, server); err != nil {
 							l.
 								WithError(err).
-								Errorf("error copying from server to client (from %s to %s)", overlayLabel, hostLabel)
+								Errorf("error copying from server to client")
 						}
 					}()
 				}()
@@ -203,16 +196,6 @@ func tcpProxy(args []string, reverse bool) error {
 	hostTransport.Close()
 	overlayTransport.Close()
 	overlayNetwork.Close()
-
-	// drain remaining data
-	for _, intf := range overlayNetwork.Interfaces() {
-		for range intf.Recv() {
-		}
-		if intf.Card() != nil { // loopback
-			for range intf.Card().Recv() {
-			}
-		}
-	}
 
 	return nil
 }
