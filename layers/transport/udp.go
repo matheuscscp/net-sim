@@ -41,11 +41,19 @@ type (
 	}
 )
 
-func (*udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+func (udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return DeserializeUDPSegment(datagram)
 }
 
-func (*udp) newConn(l *listener, remoteAddr addr) conn {
+func (udp) newClientHandshake() handshake {
+	return nil // no-op
+}
+
+func (udp) newServerHandshake() handshake {
+	return nil // no-op
+}
+
+func (udp) newConn(l *listener, remoteAddr addr, _ handshake) conn {
 	ctx, cancel := context.WithCancel(context.Background())
 	u := &udpConn{
 		ctx:        ctx,
@@ -58,11 +66,7 @@ func (*udp) newConn(l *listener, remoteAddr addr) conn {
 	return u
 }
 
-func (u *udpConn) handshakeDial(ctx context.Context) error {
-	return nil // no-op
-}
-
-func (u *udpConn) handshakeAccept(ctx context.Context) error {
+func (u *udpConn) handshake(ctx context.Context) error {
 	return nil // no-op
 }
 

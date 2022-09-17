@@ -61,7 +61,7 @@ func (l *listener) Accept() (net.Conn, error) {
 		return nil, fmt.Errorf("error waiting for pending connection: %w", err)
 	}
 
-	if err := c.handshakeAccept(l.acceptCtx); err != nil {
+	if err := c.handshake(l.acceptCtx); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("error accepting protocol handshake: %w", err)
 	}
@@ -178,7 +178,7 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	}
 
 	// handshake
-	if err := c.handshakeDial(ctx); err != nil {
+	if err := c.handshake(ctx); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("error dialing protocol handshake: %w", err)
 	}
@@ -195,7 +195,7 @@ func (l *listener) findConnOrCreate(remoteAddr addr) (conn, error) {
 
 	c, ok := l.conns[remoteAddr]
 	if !ok {
-		c = l.s.factory.newConn(l, remoteAddr)
+		c = l.s.factory.newConn(l, remoteAddr, l.s.factory.newClientHandshake())
 		l.conns[remoteAddr] = c
 	}
 	return c, nil
@@ -243,7 +243,7 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	// port is listening. find or create a new pending conn
 	c, ok = l.pendingConns[remoteAddr]
 	if !ok {
-		c = l.s.factory.newConn(l, remoteAddr)
+		c = l.s.factory.newConn(l, remoteAddr, l.s.factory.newServerHandshake())
 		l.pendingConns[remoteAddr] = c
 		l.pendingConnsCond.Broadcast() // unblock Accept()
 	}

@@ -23,8 +23,15 @@ type (
 		listeners   map[uint16]*listener
 	}
 
+	handshake interface {
+		recv(segment gopacket.TransportLayer) bool
+		do(ctx context.Context, c conn) error
+	}
+
 	protocolFactory interface {
-		newConn(l *listener, remoteAddr addr) conn
+		newClientHandshake() handshake
+		newServerHandshake() handshake
+		newConn(l *listener, remoteAddr addr, h handshake) conn
 		decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error)
 	}
 )

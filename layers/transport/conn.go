@@ -10,8 +10,7 @@ import (
 type (
 	conn interface {
 		net.Conn
-		handshakeDial(ctx context.Context) error
-		handshakeAccept(ctx context.Context) error
+		handshake(ctx context.Context) error
 		recv(segment gopacket.TransportLayer)
 	}
 )
