@@ -17,29 +17,57 @@ type (
 	tcpConn struct {
 		l          *listener
 		remoteAddr addr
+		h          handshake
 	}
+
+	tcpClientHandshake struct{}
+	tcpServerHandshake struct{}
 )
 
-func (*tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+func (tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return DeserializeTCPSegment(datagram)
 }
 
-func (*tcp) newConn(l *listener, remoteAddr addr) conn {
+func (tcp) newClientHandshake() handshake {
+	return &tcpClientHandshake{}
+}
+
+func (t *tcpClientHandshake) recv(segment gopacket.TransportLayer) bool {
+	return true // TODO
+}
+
+func (t *tcpClientHandshake) do(ctx context.Context, c conn) error {
+	return nil // TODO
+}
+
+func (tcp) newServerHandshake() handshake {
+	return &tcpServerHandshake{}
+}
+
+func (t *tcpServerHandshake) recv(segment gopacket.TransportLayer) bool {
+	return true // TODO
+}
+
+func (t *tcpServerHandshake) do(ctx context.Context, c conn) error {
+	return nil // TODO
+}
+
+func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 	return &tcpConn{
 		l:          l,
 		remoteAddr: remoteAddr,
+		h:          h,
 	}
 }
 
-func (t *tcpConn) handshakeDial(ctx context.Context) error {
-	return nil // TODO
-}
-
-func (t *tcpConn) handshakeAccept(ctx context.Context) error {
-	return nil // TODO
+func (t *tcpConn) handshake(ctx context.Context) error {
+	return t.h.do(ctx, t)
 }
 
 func (t *tcpConn) recv(segment gopacket.TransportLayer) {
+	if t.h.recv(segment) { // forward to handshake first
+		return
+	}
 	// TODO
 }
 
