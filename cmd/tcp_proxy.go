@@ -86,7 +86,7 @@ func tcpProxy(args []string, reverse bool) error {
 	listeners := make([]net.Listener, 0, len(addrs)/2)
 	for i := 0; i < len(addrs); i += 2 {
 		hostAddr := addrs[i]
-		l, err := hostTransport.Listen(transport.TCP, hostAddr)
+		l, err := hostTransport.Listen(ctx, transport.TCP, hostAddr)
 		if err != nil {
 			for j := i - 1; 0 <= j; j-- {
 				listeners[j].Close()

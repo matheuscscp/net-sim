@@ -38,7 +38,7 @@ func newListenerSet(networkLayer network.Layer, factory protocolFactory) *listen
 	}
 }
 
-func (s *listenerSet) listen(address string) (*listener, error) {
+func (s *listenerSet) listen(ctx context.Context, address string) (*listener, error) {
 	// parse address
 	port, ipAddress, err := parseHostPort(address, false /*needIP*/)
 	if err != nil {
@@ -58,6 +58,9 @@ func (s *listenerSet) listen(address string) (*listener, error) {
 			if _, ok := s.listeners[p]; !ok {
 				port = p
 				break
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
 			}
 		}
 		if port == 0 {
@@ -79,7 +82,7 @@ func (s *listenerSet) listen(address string) (*listener, error) {
 
 func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error) {
 	// listen on a random port and stop accepting connections
-	l, err := s.listen(":0")
+	l, err := s.listen(ctx, ":0")
 	if err != nil {
 		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
 	}

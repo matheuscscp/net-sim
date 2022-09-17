@@ -107,7 +107,7 @@ func httpProxy(args []string, reverse bool) error {
 	}
 	hostAddrToListener := make(map[string]net.Listener)
 	for hostAddr := range hostAddrToServerHostnameToOverlayAddr {
-		l, err := hostTransport.Listen(transport.TCP, hostAddr)
+		l, err := hostTransport.Listen(ctx, transport.TCP, hostAddr)
 		if err != nil {
 			for _, lis := range hostAddrToListener {
 				lis.Close()

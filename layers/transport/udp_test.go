@@ -28,7 +28,7 @@ func TestUDPClientServer(t *testing.T) {
 		close(sentSegments)
 	}()
 
-	server, err := transportLayer.Listen(transport.UDP, ":123")
+	server, err := transportLayer.Listen(context.Background(), transport.UDP, ":123")
 	require.NoError(t, err)
 	require.NotNil(t, server)
 
@@ -153,7 +153,7 @@ func TestUDPLocalServer(t *testing.T) {
 	}()
 
 	// specifying the loopback IP address makes the server "local"
-	server, err := transportLayer.Listen(transport.UDP, "127.0.0.1:123")
+	server, err := transportLayer.Listen(context.Background(), transport.UDP, "127.0.0.1:123")
 	require.NoError(t, err)
 	require.NotNil(t, server)
 
