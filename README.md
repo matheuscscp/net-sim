@@ -5,7 +5,7 @@ I've always wanted to write some code that simulates networking devices/agents/a
 
 # Roadmap
 
-## MVP
+## Proof of Concept
 
 * [X] Physical Layer: Full duplex unreliable wire
 * [X] Physical Layer: Packet capture (.pcapng)
