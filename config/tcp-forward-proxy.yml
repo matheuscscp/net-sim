@@ -1,4 +1,4 @@
-# start command: ./net-sim tcp-proxy forward config/tcp-forward-proxy.yml 1.1.1.2:80 127.0.0.1:8081
+# start command: ./net-sim tcp-proxy config/tcp-forward-proxy.yml :80 host::8081
 
 defaultRouteInterface: eth0
 interfaces:

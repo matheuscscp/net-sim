@@ -7,130 +7,117 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
-	"os"
 	"sync"
 	"time"
 
+	"github.com/matheuscscp/net-sim/hostnetwork"
 	"github.com/matheuscscp/net-sim/layers/application"
 	"github.com/matheuscscp/net-sim/layers/network"
 	"github.com/matheuscscp/net-sim/layers/transport"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var (
 	httpProxyCmd = &cobra.Command{
-		Use:   "http-proxy",
+		Use:   "http-proxy <overlay-network-yaml-config-file> <<src-addr> <host-header> <dst-addr>>...",
 		Short: "Proxy HTTP requests between the host network and the overlay network",
-	}
+		Long: `Proxy HTTP requests from a src (addr, host) pair to a dst addr, where
+the address syntax is the same of the tcp-proxy command except that
+ports can be omitted (and default to 80).
 
-	httpProxyReverseCmd = &cobra.Command{
-		Use:   "reverse <overlay-network-yaml-config-file> <<host-addr> <server-hostname> <overlay-addr>>...",
-		Short: "Proxy HTTP requests from the host network to the overlay network",
-		Args:  cobra.MinimumNArgs(4),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return httpProxy(args, true /*reverse*/)
-		},
-	}
+An HTTP server will be created on each src address and each request
+will be proxied to the dst address mapped by the Host header, or
+dropped with 404 if the Host header is not mapped.
 
-	httpProxyForwardCmd = &cobra.Command{
-		Use:   "forward <overlay-network-yaml-config-file> <<overlay-addr> <server-hostname> <host-addr>>...",
-		Short: "Proxy HTTP requests from the overlay network to the host network",
-		Args:  cobra.MinimumNArgs(4),
+The same port uniqueness rule of the tcp-proxy command applies,
+except if all the multiple occurrences of a given src port within
+the same network (host or overlay) have the exact same <ipv4> part
+on the src address and pairwise-distinct Host headers.`,
+		Example: `  # will proxy requests with Host header google.com on port 80 on the
+  # overlay network to addr 127.0.0.1:4321 on the host network
+  net-sim http-proxy overlay-network.yml '' google.com host::4321`,
+		Args: cobra.MinimumNArgs(4),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return httpProxy(args, false /*reverse*/)
+			return httpProxy(args)
 		},
 	}
 )
 
 func init() {
-	httpProxyCmd.AddCommand(httpProxyReverseCmd)
-	httpProxyCmd.AddCommand(httpProxyForwardCmd)
 	rootCmd.AddCommand(httpProxyCmd)
 }
 
-func httpProxy(args []string, reverse bool) error {
-	hostTransport := transport.NewHostLayer()
+func httpProxy(args []string) error {
+	hostTransport := hostnetwork.NewTransportLayer()
 	hostRoundTripper := http.DefaultTransport
 	ctx, cancel := contextWithCancelOnInterrupt(context.Background())
 	defer cancel()
 
-	// read overlay network config and create
+	// create overlay network, transport and round tripper from config
 	overlayNetworkConfFile := args[0]
-	b, err := os.ReadFile(overlayNetworkConfFile)
-	if err != nil {
-		return fmt.Errorf("error reading yaml overlay network config file: %w", err)
-	}
-	var overlayNetworkConf network.LayerConfig
-	if err := yaml.Unmarshal(b, &overlayNetworkConf); err != nil {
-		return fmt.Errorf("error decoding overlay network config from yaml: %w", err)
-	}
-	overlayNetwork, err := network.NewLayer(ctx, overlayNetworkConf)
+	overlayNetwork, err := network.NewLayerFromConfigFile(ctx, overlayNetworkConfFile)
 	if err != nil {
 		return err
 	}
 	overlayTransport := transport.NewLayer(overlayNetwork)
 	overlayRoundTripper := application.NewHTTPRoundTripper(overlayTransport)
 
-	// swap networks for forward proxy mode
-	hostLabel, overlayLabel := "host", "overlay"
-	hostAddrLabel, overlayAddrLabel := fmt.Sprintf("%s_addr", hostLabel), fmt.Sprintf("%s_addr", overlayLabel)
-	if !reverse { // forward
-		hostTransport, overlayTransport = overlayTransport, hostTransport
-
-		// hostRoundTripper, overlayRoundTripper = overlayRoundTripper, hostRoundTripper // linter complains
-		overlayRoundTripper = hostRoundTripper
-
-		// hostAddrLabel, overlayAddrLabel = overlayAddrLabel, hostAddrLabel // linter complains
-		hostAddrLabel = overlayAddrLabel
-
-		hostLabel, overlayLabel = overlayLabel, hostLabel
+	// create host and overlay networks api maps
+	transportMap := map[string]transport.Layer{
+		host:    hostTransport,
+		overlay: overlayTransport,
+	}
+	roundTripperMap := map[string]http.RoundTripper{
+		host:    hostRoundTripper,
+		overlay: overlayRoundTripper,
 	}
 
-	// create host listeners (bind host addrs)
-	addrs := args[1:]
-	if len(addrs)%3 != 0 {
-		return errors.New("number of specified server arguments is not multiple of three")
+	// create listeners
+	httpProxyEntries, err := httpProxyEntries(args[1:]).entries()
+	if err != nil {
+		return err
 	}
-	hostAddrToServerHostnameToOverlayAddr := make(map[string]map[string]string)
-	for i := 0; i < len(addrs); i += 3 {
-		hostAddr, serverHostname, overlayAddr := addrs[i], addrs[i+1], addrs[i+2]
-		serverHostnameToOverlayAddr, ok := hostAddrToServerHostnameToOverlayAddr[hostAddr]
+	srcToHostToDst := make(map[addr]map[string]addr)
+	for _, entry := range httpProxyEntries {
+		hostToDst, ok := srcToHostToDst[entry.src]
 		if !ok {
-			serverHostnameToOverlayAddr = make(map[string]string)
-			hostAddrToServerHostnameToOverlayAddr[hostAddr] = serverHostnameToOverlayAddr
+			hostToDst = make(map[string]addr)
+			srcToHostToDst[entry.src] = hostToDst
 		}
-		serverHostnameToOverlayAddr[serverHostname] = overlayAddr
+		if _, ok := hostToDst[entry.host]; ok {
+			return fmt.Errorf("(src-addr=%s, host-header=%s) pair is repeated", entry.src, entry.host)
+		}
+		hostToDst[entry.host] = entry.dst
 	}
-	hostAddrToListener := make(map[string]net.Listener)
-	for hostAddr := range hostAddrToServerHostnameToOverlayAddr {
-		l, err := hostTransport.Listen(ctx, transport.TCP, hostAddr)
+	srcToListener := make(map[addr]net.Listener)
+	for src := range srcToHostToDst {
+		t := transportMap[src.networkOrDefault()]
+		l, err := t.Listen(ctx, transport.TCP, src.hostPort().orPort(80).String())
 		if err != nil {
-			for _, lis := range hostAddrToListener {
+			for _, lis := range srcToListener {
 				lis.Close()
 			}
-			return fmt.Errorf("error listening on %s address '%s': %w", hostLabel, hostAddr, err)
+			return fmt.Errorf("error listening on address '%s': %w", src, err)
 		}
-		hostAddrToListener[hostAddr] = l
+		srcToListener[src] = l
 	}
 
 	// start server threads
-	hostAddrToServer := make(map[string]*http.Server)
+	srcToServer := make(map[addr]*http.Server)
 	var wg sync.WaitGroup
-	for hostAddr, lis := range hostAddrToListener {
+	for src, lis := range srcToListener {
 		l := logrus.
-			WithField(hostAddrLabel, hostAddr)
-		serverHostnameToOverlayAddr := hostAddrToServerHostnameToOverlayAddr[hostAddr]
+			WithField("src_addr", src)
+		hostToDst := srcToHostToDst[src]
 		s := &http.Server{
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				serverHostname := r.Header.Get("Host")
-				overlayAddr, ok := serverHostnameToOverlayAddr[serverHostname]
+				hostHeader := r.Header.Get("Host")
+				dst, ok := hostToDst[hostHeader]
 				if !ok {
 					w.WriteHeader(http.StatusNotFound)
-					resp := []byte(fmt.Sprintf("server hostname '%s' not found", serverHostname))
+					resp := []byte(fmt.Sprintf("host '%s' not found", hostHeader))
 					if n, err := w.Write(resp); err != nil {
 						l.
 							WithError(err).
@@ -139,25 +126,14 @@ func httpProxy(args []string, reverse bool) error {
 					}
 					return
 				}
-				rawOverlayURL := fmt.Sprintf("http://%s", overlayAddr)
-				overlayURL, err := url.Parse(rawOverlayURL)
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					resp := []byte(fmt.Sprintf("error parsing %s URL '%s': %v", overlayLabel, rawOverlayURL, err))
-					if n, err := w.Write(resp); err != nil {
-						l.
-							WithError(err).
-							WithField("bytes_written", n).
-							Error("error writing response")
-					}
-					return
-				}
-				proxy := httputil.NewSingleHostReverseProxy(overlayURL)
-				proxy.Transport = overlayRoundTripper
+				url := *r.URL
+				url.Host = dst.hostPort().orLoopback().orPort(80).String()
+				proxy := httputil.NewSingleHostReverseProxy(&url)
+				proxy.Transport = roundTripperMap[dst.networkOrDefault()]
 				proxy.ServeHTTP(w, r)
 			}),
 		}
-		hostAddrToServer[hostAddr] = s
+		srcToServer[src] = s
 
 		lis := lis
 		wg.Add(1)
@@ -166,38 +142,27 @@ func httpProxy(args []string, reverse bool) error {
 			if err := s.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				l.
 					WithError(err).
-					Errorf("error Serve()ing %s server", hostLabel)
+					Error("error Serve()ing server")
 			}
 		}()
 	}
 
 	// wait for ctx and close
 	<-ctx.Done()
-	logrus.Info("interruption signal received, closing servers...")
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	for hostAddr, s := range hostAddrToServer {
+	for src, s := range srcToServer {
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		if err := s.Shutdown(ctx); err != nil {
 			logrus.
 				WithError(err).
-				WithField(hostAddrLabel, hostAddr).
-				Errorf("error shutting down %s server", hostLabel)
+				WithField("src_addr", src).
+				Error("error shutting down server")
 		}
 	}
 	wg.Wait()
 	hostTransport.Close()
 	overlayTransport.Close()
 	overlayNetwork.Close()
-
-	// drain remaining data
-	for _, intf := range overlayNetwork.Interfaces() {
-		for range intf.Recv() {
-		}
-		if intf.Card() != nil { // loopback
-			for range intf.Card().Recv() {
-			}
-		}
-	}
 
 	return nil
 }
