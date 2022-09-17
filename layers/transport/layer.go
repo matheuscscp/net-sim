@@ -31,7 +31,7 @@ type (
 		// only accept incoming connections targeted to this
 		// IP address. If the port zero is used, a random
 		// port will be chosen.
-		Listen(network, address string) (net.Listener, error)
+		Listen(ctx context.Context, network, address string) (net.Listener, error)
 
 		// Dial starts a connection with the given IPv4:port address
 		// on the given network ("tcp" or "udp") and returns a handler
@@ -116,12 +116,12 @@ func NewLayer(networkLayer network.Layer) Layer {
 	return l
 }
 
-func (l *layer) Listen(network, address string) (net.Listener, error) {
+func (l *layer) Listen(ctx context.Context, network, address string) (net.Listener, error) {
 	if network == TCP {
-		return l.tcp.listen(address)
+		return l.tcp.listen(ctx, address)
 	}
 	if network == UDP {
-		return l.udp.listen(address)
+		return l.udp.listen(ctx, address)
 	}
 	return nil, ErrInvalidNetwork
 }

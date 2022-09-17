@@ -15,8 +15,9 @@ func NewHostLayer() Layer {
 	return &hostLayer{}
 }
 
-func (h *hostLayer) Listen(network, address string) (net.Listener, error) {
-	return net.Listen(network, address)
+func (h *hostLayer) Listen(ctx context.Context, network, address string) (net.Listener, error) {
+	var lc net.ListenConfig
+	return lc.Listen(ctx, network, address)
 }
 
 func (h *hostLayer) Dial(ctx context.Context, network, address string) (net.Conn, error) {

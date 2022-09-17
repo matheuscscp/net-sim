@@ -2,11 +2,13 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"time"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
+	"github.com/hashicorp/go-multierror"
 )
 
 type (
@@ -18,15 +20,15 @@ type (
 	}
 )
 
+func (*tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+	return DeserializeTCPSegment(datagram)
+}
+
 func (*tcp) newConn(l *listener, remoteAddr addr) conn {
 	return &tcpConn{
 		l:          l,
 		remoteAddr: remoteAddr,
 	}
-}
-
-func (*tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
-	return nil, nil // TODO
 }
 
 func (t *tcpConn) handshakeDial(ctx context.Context) error {
@@ -54,15 +56,25 @@ func (t *tcpConn) Close() error {
 }
 
 func (t *tcpConn) LocalAddr() net.Addr {
-	return nil // TODO
+	return t.l.Addr()
 }
 
 func (t *tcpConn) RemoteAddr() net.Addr {
-	return nil // TODO
+	a := t.remoteAddr
+	return &a
 }
 
+// SetDeadline is the same as calling SetReadDeadline() and
+// SetWriteDeadline().
 func (t *tcpConn) SetDeadline(d time.Time) error {
-	return nil // TODO
+	var err error
+	if dErr := t.SetReadDeadline(d); dErr != nil {
+		err = multierror.Append(err, fmt.Errorf("error setting read deadline: %w", err))
+	}
+	if dErr := t.SetWriteDeadline(d); dErr != nil {
+		err = multierror.Append(err, fmt.Errorf("error setting write deadline: %w", err))
+	}
+	return err
 }
 
 func (t *tcpConn) SetReadDeadline(d time.Time) error {

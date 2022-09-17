@@ -41,6 +41,10 @@ type (
 	}
 )
 
+func (*udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+	return DeserializeUDPSegment(datagram)
+}
+
 func (*udp) newConn(l *listener, remoteAddr addr) conn {
 	ctx, cancel := context.WithCancel(context.Background())
 	u := &udpConn{
@@ -52,10 +56,6 @@ func (*udp) newConn(l *listener, remoteAddr addr) conn {
 	u.inCond = sync.NewCond(&u.inMu)
 	u.outCond = sync.NewCond(&u.outMu)
 	return u
-}
-
-func (*udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
-	return DeserializeUDPSegment(datagram)
 }
 
 func (u *udpConn) handshakeDial(ctx context.Context) error {
@@ -72,7 +72,7 @@ func (u *udpConn) recv(segment gopacket.TransportLayer) {
 	u.inMu.Lock()
 	defer u.inMu.Unlock()
 
-	if u.isClosed() {
+	if u.ctx.Err() != nil {
 		return
 	}
 
@@ -125,7 +125,7 @@ func (u *udpConn) waitForQueueElem() (*udpQueueElem, error) {
 
 func (u *udpConn) checkReadError() error {
 	// check closed
-	if u.isClosed() {
+	if u.ctx.Err() != nil {
 		return ErrConnClosed
 	}
 
@@ -138,7 +138,7 @@ func (u *udpConn) checkReadError() error {
 }
 
 func (u *udpConn) Write(b []byte) (n int, err error) {
-	if u.isClosed() {
+	if u.ctx.Err() != nil {
 		return 0, ErrConnClosed
 	}
 
@@ -253,12 +253,12 @@ func (u *udpConn) RemoteAddr() net.Addr {
 
 // SetDeadline is the same as calling SetReadDeadline() and
 // SetWriteDeadline().
-func (c *udpConn) SetDeadline(d time.Time) error {
+func (u *udpConn) SetDeadline(d time.Time) error {
 	var err error
-	if dErr := c.SetReadDeadline(d); dErr != nil {
+	if dErr := u.SetReadDeadline(d); dErr != nil {
 		err = multierror.Append(err, fmt.Errorf("error setting read deadline: %w", err))
 	}
-	if dErr := c.SetWriteDeadline(d); dErr != nil {
+	if dErr := u.SetWriteDeadline(d); dErr != nil {
 		err = multierror.Append(err, fmt.Errorf("error setting write deadline: %w", err))
 	}
 	return err
@@ -269,22 +269,22 @@ func (c *udpConn) SetDeadline(d time.Time) error {
 // is reached (or when the connection is Close()d), so
 // calling it with a time point that is too distant in
 // the future is not a good idea.
-func (c *udpConn) SetReadDeadline(d time.Time) error {
-	c.inMu.Lock()
-	c.readDeadline = d
-	c.inMu.Unlock()
+func (u *udpConn) SetReadDeadline(d time.Time) error {
+	u.inMu.Lock()
+	u.readDeadline = d
+	u.inMu.Unlock()
 
 	// start thread to wait until either the deadline or until
 	// the connection context is done and then notify all blocked
 	// readers
 	go func() {
 		// wait
-		ctx, cancel := context.WithDeadline(c.ctx, d)
+		ctx, cancel := context.WithDeadline(u.ctx, d)
 		defer cancel()
 
 		// notify
 		<-ctx.Done()
-		c.inCond.Broadcast()
+		u.inCond.Broadcast()
 	}()
 
 	return nil
@@ -295,27 +295,23 @@ func (c *udpConn) SetReadDeadline(d time.Time) error {
 // is reached (or when the connection is Close()d), so
 // calling it with a time point that is too distant in
 // the future is not a good idea.
-func (c *udpConn) SetWriteDeadline(d time.Time) error {
-	c.outMu.Lock()
-	c.writeDeadline = d
-	c.outMu.Unlock()
+func (u *udpConn) SetWriteDeadline(d time.Time) error {
+	u.outMu.Lock()
+	u.writeDeadline = d
+	u.outMu.Unlock()
 
 	// start thread to wait until either the deadline or until
 	// the connection context is done and then notify all blocked
 	// writers
 	go func() {
 		// wait
-		ctx, cancel := context.WithDeadline(c.ctx, d)
+		ctx, cancel := context.WithDeadline(u.ctx, d)
 		defer cancel()
 
 		// notify
 		<-ctx.Done()
-		c.outCond.Broadcast()
+		u.outCond.Broadcast()
 	}()
 
 	return nil
-}
-
-func (c *udpConn) isClosed() bool {
-	return c.ctx.Err() != nil
 }

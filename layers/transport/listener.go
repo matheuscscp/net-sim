@@ -179,6 +179,7 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 
 	// handshake
 	if err := c.handshakeDial(ctx); err != nil {
+		c.Close()
 		return nil, fmt.Errorf("error dialing protocol handshake: %w", err)
 	}
 	return c, nil
