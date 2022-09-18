@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/hashicorp/go-multierror"
+	"github.com/sirupsen/logrus"
 )
 
 type (
@@ -61,10 +63,17 @@ func (l *listener) Accept() (net.Conn, error) {
 		return nil, fmt.Errorf("error waiting for pending connection: %w", err)
 	}
 
-	if err := c.handshake(l.acceptCtx); err != nil {
-		c.Close()
-		return nil, fmt.Errorf("error accepting protocol handshake: %w", err)
-	}
+	ctx, cancel := context.WithTimeout(l.acceptCtx, 30*time.Second)
+	c.setHandshakeContext(ctx)
+	go func() {
+		defer cancel()
+		if err := c.handshake(); err != nil {
+			c.Close()
+			logrus.
+				WithError(err).
+				Error("error accepting protocol handshake")
+		}
+	}()
 
 	return c, nil
 }
@@ -178,7 +187,10 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	}
 
 	// handshake
-	if err := c.handshake(ctx); err != nil {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	c.setHandshakeContext(ctx)
+	if err := c.handshake(); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("error dialing protocol handshake: %w", err)
 	}

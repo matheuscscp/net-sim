@@ -10,7 +10,8 @@ import (
 type (
 	conn interface {
 		net.Conn
-		handshake(ctx context.Context) error
+		setHandshakeContext(ctx context.Context)
+		handshake() error
 		recv(segment gopacket.TransportLayer)
 	}
 )

@@ -66,7 +66,11 @@ func (udp) newConn(l *listener, remoteAddr addr, _ handshake) conn {
 	return u
 }
 
-func (u *udpConn) handshake(ctx context.Context) error {
+func (u *udpConn) setHandshakeContext(ctx context.Context) {
+	// no-op
+}
+
+func (u *udpConn) handshake() error {
 	return nil // no-op
 }
 

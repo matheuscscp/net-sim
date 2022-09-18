@@ -19,17 +19,21 @@ type (
 		l          *listener
 		remoteAddr addr
 		h          handshake
+		hCtx       context.Context
 
-		myAck   uint32
-		peerAck uint32
+		seq, ack uint32
 	}
 
 	tcpClientHandshake struct {
-		synack chan uint32
+		synack chan tcpSynAck
+	}
+
+	tcpSynAck struct {
+		seq, ack uint32
 	}
 
 	tcpServerHandshake struct {
-		syn chan struct{}
+		syn chan uint32
 		ack chan uint32
 	}
 )
@@ -39,7 +43,7 @@ func (tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 }
 
 func (tcp) newClientHandshake() handshake {
-	return &tcpClientHandshake{make(chan uint32, 1)}
+	return &tcpClientHandshake{make(chan tcpSynAck, 1)}
 }
 
 func (h *tcpClientHandshake) recv(segment gopacket.TransportLayer) {
@@ -47,7 +51,7 @@ func (h *tcpClientHandshake) recv(segment gopacket.TransportLayer) {
 	switch {
 	case s.SYN && s.ACK:
 		select {
-		case h.synack <- s.Ack:
+		case h.synack <- tcpSynAck{s.Seq, s.Ack}:
 		default:
 		}
 	}
@@ -57,6 +61,7 @@ func (h *tcpClientHandshake) do(ctx context.Context, c conn) error {
 	t := c.(*tcpConn)
 
 	// send SYN segment
+	seq := rand.Uint32()
 	datagramHeader := &gplayers.IPv4{
 		DstIP:    t.remoteAddr.ipAddress.Raw(),
 		Protocol: gplayers.IPProtocolTCP,
@@ -65,6 +70,7 @@ func (h *tcpClientHandshake) do(ctx context.Context, c conn) error {
 		SrcPort: gplayers.TCPPort(t.l.port),
 		DstPort: gplayers.TCPPort(t.remoteAddr.port),
 		SYN:     true,
+		Seq:     seq,
 	}
 	if t.l.ipAddress != nil {
 		datagramHeader.SrcIP = t.l.ipAddress.Raw()
@@ -78,33 +84,36 @@ func (h *tcpClientHandshake) do(ctx context.Context, c conn) error {
 	}
 
 	// receive SYNACK segment
-	var peerAck uint32
+	var ack uint32
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case peerAck = <-h.synack:
+	case synack := <-h.synack:
+		if synack.ack != seq+1 {
+			return fmt.Errorf("peer sent wrong ack for handshake. want %d, got %d", seq+1, synack.ack)
+		}
+		ack = synack.seq + 1
 	}
 
 	// send ACK segment
-	myAck := rand.Uint32()
 	segment = &gplayers.TCP{
 		SrcPort: gplayers.TCPPort(t.l.port),
 		DstPort: gplayers.TCPPort(t.remoteAddr.port),
 		ACK:     true,
-		Ack:     myAck,
+		Ack:     ack,
 	}
 	if err := intf.SendTransportSegment(ctx, datagramHeader, segment); err != nil {
 		return fmt.Errorf("error sending tcp ack segment: %w", err)
 	}
 
-	t.myAck = myAck
-	t.peerAck = peerAck
+	t.seq = seq
+	t.ack = ack
 
 	return nil
 }
 
 func (tcp) newServerHandshake() handshake {
-	return &tcpServerHandshake{make(chan struct{}, 1), make(chan uint32, 1)}
+	return &tcpServerHandshake{make(chan uint32, 1), make(chan uint32, 1)}
 }
 
 func (h *tcpServerHandshake) recv(segment gopacket.TransportLayer) {
@@ -112,7 +121,7 @@ func (h *tcpServerHandshake) recv(segment gopacket.TransportLayer) {
 	switch {
 	case s.SYN && !s.ACK:
 		select {
-		case h.syn <- struct{}{}:
+		case h.syn <- s.Seq:
 		default:
 		}
 	case s.ACK && !s.SYN:
@@ -127,14 +136,16 @@ func (h *tcpServerHandshake) do(ctx context.Context, c conn) error {
 	t := c.(*tcpConn)
 
 	// receive SYN segment
+	var ack uint32
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-h.syn:
+	case seq := <-h.syn:
+		ack = seq + 1
 	}
 
 	// send SYNACK segment
-	myAck := rand.Uint32()
+	seq := rand.Uint32()
 	datagramHeader := &gplayers.IPv4{
 		DstIP:    t.remoteAddr.ipAddress.Raw(),
 		Protocol: gplayers.IPProtocolTCP,
@@ -143,8 +154,9 @@ func (h *tcpServerHandshake) do(ctx context.Context, c conn) error {
 		SrcPort: gplayers.TCPPort(t.l.port),
 		DstPort: gplayers.TCPPort(t.remoteAddr.port),
 		SYN:     true,
+		Seq:     seq,
 		ACK:     true,
-		Ack:     myAck,
+		Ack:     ack,
 	}
 	if t.l.ipAddress != nil {
 		datagramHeader.SrcIP = t.l.ipAddress.Raw()
@@ -158,15 +170,17 @@ func (h *tcpServerHandshake) do(ctx context.Context, c conn) error {
 	}
 
 	// receive ACK segment
-	var peerAck uint32
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case peerAck = <-h.ack:
+	case ack := <-h.ack:
+		if ack != seq+1 {
+			return fmt.Errorf("peer sent wrong ack for handshake. want %d, got %d", seq+1, ack)
+		}
 	}
 
-	t.myAck = myAck
-	t.peerAck = peerAck
+	t.seq = seq
+	t.ack = ack
 
 	return nil
 }
@@ -179,14 +193,22 @@ func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 	}
 }
 
-func (t *tcpConn) handshake(ctx context.Context) error {
+func (t *tcpConn) setHandshakeContext(ctx context.Context) {
+	t.hCtx = ctx
+}
+
+func (t *tcpConn) handshake() error {
 	if handshake := t.h; handshake != nil {
-		if err := handshake.do(ctx, t); err != nil {
+		defer func() { t.h = nil }()
+		if err := handshake.do(t.hCtx, t); err != nil {
 			return err
 		}
-		t.h = nil
 	}
 	return nil
+}
+
+func (t *tcpConn) waitHandshake() {
+	<-t.hCtx.Done()
 }
 
 func (t *tcpConn) recv(segment gopacket.TransportLayer) {
@@ -200,14 +222,17 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 }
 
 func (t *tcpConn) Read(b []byte) (n int, err error) {
+	t.waitHandshake()
 	return 0, nil // TODO
 }
 
 func (t *tcpConn) Write(b []byte) (n int, err error) {
+	t.waitHandshake()
 	return 0, nil // TODO
 }
 
 func (t *tcpConn) Close() error {
+	t.waitHandshake()
 	return nil // TODO
 }
 
