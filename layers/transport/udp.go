@@ -215,7 +215,7 @@ func (u *udpConn) Write(b []byte) (n int, err error) {
 		if errors.Is(err, context.Canceled) {
 			return 0, ErrConnClosed
 		}
-		return 0, fmt.Errorf("error sending transport segment: %w", err)
+		return 0, fmt.Errorf("error sending udp segment: %w", err)
 	}
 
 	return len(b), nil
