@@ -24,7 +24,7 @@ type (
 	}
 
 	handshake interface {
-		recv(segment gopacket.TransportLayer) bool
+		recv(segment gopacket.TransportLayer)
 		do(ctx context.Context, c conn) error
 	}
 
