@@ -16,14 +16,42 @@ type (
 		port      uint16
 		ipAddress gopacket.Endpoint
 	}
-)
 
-func (a *addr) Network() string {
-	return UDP
-}
+	tcpAddr struct {
+		addr
+	}
+
+	udpAddr struct {
+		addr
+	}
+)
 
 func (a *addr) String() string {
 	return fmt.Sprintf("%s:%d", a.ipAddress, a.port)
+}
+
+func (tcp) newAddr(addr addr) net.Addr {
+	return newTCPAddr(addr)
+}
+
+func newTCPAddr(addr addr) *tcpAddr {
+	return &tcpAddr{addr}
+}
+
+func (*tcpAddr) Network() string {
+	return TCP
+}
+
+func (udp) newAddr(addr addr) net.Addr {
+	return newUDPAddr(addr)
+}
+
+func newUDPAddr(addr addr) *udpAddr {
+	return &udpAddr{addr}
+}
+
+func (*udpAddr) Network() string {
+	return UDP
 }
 
 func parseHostPort(address string, needIP bool) (uint16, *gopacket.Endpoint, error) {

@@ -12,7 +12,7 @@ import (
 func DeserializeTCPSegment(datagram *gplayers.IPv4) (*gplayers.TCP, error) {
 	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeTCP, gopacket.Lazy)
 	segment := pkt.TransportLayer().(*gplayers.TCP)
-	if segment == nil || len(segment.Payload) == 0 {
+	if segment == nil || pkt.ErrorLayer() != nil { // a TCP segment might not have a payload
 		return nil, fmt.Errorf("error deserializing tcp layer: %w", pkt.ErrorLayer().Error())
 	}
 	if err := validateChecksum(datagram, segment); err != nil {
@@ -24,7 +24,7 @@ func DeserializeTCPSegment(datagram *gplayers.IPv4) (*gplayers.TCP, error) {
 func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
 	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeUDP, gopacket.Lazy)
 	segment := pkt.TransportLayer().(*gplayers.UDP)
-	if segment == nil || len(segment.Payload) == 0 {
+	if segment == nil || len(segment.Payload) == 0 { // a UDP segment must always have a payload
 		return nil, fmt.Errorf("error deserializing udp layer: %w", pkt.ErrorLayer().Error())
 	}
 	if err := validateChecksum(datagram, segment); err != nil {

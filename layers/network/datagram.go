@@ -47,7 +47,7 @@ func DeserializeDatagram(buf []byte) (*gplayers.IPv4, error) {
 	// deserialize
 	pkt := gopacket.NewPacket(buf, gplayers.LayerTypeIPv4, gopacket.Lazy)
 	datagram := pkt.NetworkLayer().(*gplayers.IPv4)
-	if datagram == nil || len(datagram.Payload) == 0 {
+	if datagram == nil || len(datagram.Payload) == 0 { // an IP datagram must always have a payload
 		return nil, fmt.Errorf("error deserializing network layer: %w", pkt.ErrorLayer().Error())
 	}
 
