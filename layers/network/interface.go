@@ -334,7 +334,7 @@ func (i *interfaceImpl) decapARPAndReply(frame *gplayers.Ethernet) error {
 	// deserialize arp
 	pkt := gopacket.NewPacket(frame.Payload, gplayers.LayerTypeARP, gopacket.Lazy)
 	arp := pkt.Layer(gplayers.LayerTypeARP).(*gplayers.ARP)
-	if arp == nil || len(arp.Payload) == 0 {
+	if arp == nil || pkt.ErrorLayer() != nil {
 		return fmt.Errorf("error deserializing arp packet: %w", pkt.ErrorLayer().Error())
 	}
 

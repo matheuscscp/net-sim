@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/hashicorp/go-multierror"
-	"github.com/matheuscscp/net-sim/layers/network"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -16,8 +15,8 @@ import (
 
 type (
 	listenerSet struct {
-		networkLayer network.Layer
-		factory      protocolFactory
+		transportLayer  *layer
+		protocolFactory protocolFactory
 
 		listenersMu sync.RWMutex
 		listeners   map[uint16]*listener
@@ -32,16 +31,16 @@ type (
 		newClientHandshake() handshake
 		newServerHandshake() handshake
 		newConn(l *listener, remoteAddr addr, h handshake) conn
+		newAddr(addr addr) net.Addr
 		decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error)
 	}
 )
 
-func newListenerSet(networkLayer network.Layer, factory protocolFactory) *listenerSet {
+func newListenerSet(transportLayer *layer, factory protocolFactory) *listenerSet {
 	return &listenerSet{
-		networkLayer: networkLayer,
-		factory:      factory,
-
-		listeners: make(map[uint16]*listener),
+		transportLayer:  transportLayer,
+		protocolFactory: factory,
+		listeners:       make(map[uint16]*listener),
 	}
 }
 
@@ -103,7 +102,7 @@ func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error
 
 func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 	// decap
-	segment, err := s.factory.decap(datagram)
+	segment, err := s.protocolFactory.decap(datagram)
 	if err != nil {
 		logrus.
 			WithError(err).

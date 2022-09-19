@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/matheuscscp/net-sim/layers/network"
 
+	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 )
 
@@ -55,11 +56,12 @@ type (
 	}
 
 	layer struct {
-		tcp       *listenerSet
-		udp       *listenerSet
-		cancelCtx context.CancelFunc
-		wg        sync.WaitGroup
-		giantBuf  chan *gplayers.IPv4
+		networkLayer network.Layer
+		tcp          *listenerSet
+		udp          *listenerSet
+		cancelCtx    context.CancelFunc
+		wg           sync.WaitGroup
+		giantBuf     chan *gplayers.IPv4
 	}
 )
 
@@ -70,11 +72,12 @@ func NewLayer(networkLayer network.Layer) Layer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	l := &layer{
-		tcp:       newListenerSet(networkLayer, tcp{}),
-		udp:       newListenerSet(networkLayer, udp{}),
-		cancelCtx: cancel,
-		giantBuf:  make(chan *gplayers.IPv4, demuxThreads*channelSize),
+		networkLayer: networkLayer,
+		cancelCtx:    cancel,
+		giantBuf:     make(chan *gplayers.IPv4, demuxThreads*channelSize),
 	}
+	l.tcp = newListenerSet(l, tcp{})
+	l.udp = newListenerSet(l, udp{})
 
 	// create thread for listening to IP datagrams and push them
 	// into the giant buffer
@@ -159,4 +162,19 @@ func (l *layer) Close() error {
 		}
 	}
 	return err
+}
+
+func (l *layer) send(
+	ctx context.Context,
+	datagramHeader *gplayers.IPv4,
+	segment gopacket.TransportLayer,
+) error {
+	intf, err := l.networkLayer.FindInterfaceForHeader(datagramHeader)
+	if err != nil {
+		return fmt.Errorf("error finding interface for datagram header: %w", err)
+	}
+	if err := intf.SendTransportSegment(ctx, datagramHeader, segment); err != nil {
+		return fmt.Errorf("error sending transport segment: %w", err)
+	}
+	return nil
 }

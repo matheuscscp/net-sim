@@ -63,14 +63,21 @@ func (l *listener) Accept() (net.Conn, error) {
 		return nil, fmt.Errorf("error waiting for pending connection: %w", err)
 	}
 
+	// a handshake should not block the goroutine calling Accept(),
+	// hence we call it on a new goroutine instead. the same is not
+	// true when Dial()ing
 	ctx, cancel := context.WithTimeout(l.acceptCtx, 30*time.Second)
 	c.setHandshakeContext(ctx)
 	go func() {
 		defer cancel()
 		if err := c.handshake(); err != nil {
 			c.Close()
+			a := l.Addr()
 			logrus.
 				WithError(err).
+				WithField("protocol", a.Network()).
+				WithField("local_addr", a.String()).
+				WithField("remote_addr", c.RemoteAddr().String()).
 				Error("error accepting protocol handshake")
 		}
 	}()
@@ -166,11 +173,11 @@ func (l *listener) stopListening() error {
 }
 
 func (l *listener) Addr() net.Addr {
-	a := &addr{port: l.port}
+	a := addr{port: l.port}
 	if l.ipAddress != nil {
 		a.ipAddress = *l.ipAddress
 	}
-	return a
+	return l.s.protocolFactory.newAddr(a)
 }
 
 // Dial returns a net.Conn bound to the given address.
@@ -207,7 +214,7 @@ func (l *listener) findConnOrCreate(remoteAddr addr) (conn, error) {
 
 	c, ok := l.conns[remoteAddr]
 	if !ok {
-		c = l.s.factory.newConn(l, remoteAddr, l.s.factory.newClientHandshake())
+		c = l.s.protocolFactory.newConn(l, remoteAddr, l.s.protocolFactory.newClientHandshake())
 		l.conns[remoteAddr] = c
 	}
 	return c, nil
@@ -255,7 +262,7 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	// port is listening. find or create a new pending conn
 	c, ok = l.pendingConns[remoteAddr]
 	if !ok {
-		c = l.s.factory.newConn(l, remoteAddr, l.s.factory.newServerHandshake())
+		c = l.s.protocolFactory.newConn(l, remoteAddr, l.s.protocolFactory.newServerHandshake())
 		l.pendingConns[remoteAddr] = c
 		l.pendingConnsCond.Broadcast() // unblock Accept()
 	}
