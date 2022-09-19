@@ -118,10 +118,9 @@ func httpProxy(args []string) error {
 				if !ok {
 					w.WriteHeader(http.StatusNotFound)
 					resp := []byte(fmt.Sprintf("host '%s' not found", hostHeader))
-					if n, err := w.Write(resp); err != nil {
+					if _, err := w.Write(resp); err != nil {
 						l.
 							WithError(err).
-							WithField("bytes_written", n).
 							Error("error writing response")
 					}
 					return
