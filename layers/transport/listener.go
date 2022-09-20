@@ -3,12 +3,14 @@ package transport
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/hashicorp/go-multierror"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 	"github.com/sirupsen/logrus"
 )
 
@@ -121,11 +123,7 @@ func (l *listener) waitForPendingConnAndMoveToConns() (conn, error) {
 }
 
 func (l *listener) Close() error {
-	if err := l.stopListening(); err != nil {
-		return err
-	}
-
-	// delete the conns map so new conns are dropped
+	// delete the conns map
 	var conns map[addr]conn
 	l.connsMu.Lock()
 	conns, l.conns = l.conns, nil
@@ -134,16 +132,18 @@ func (l *listener) Close() error {
 		return nil
 	}
 	l.connsMu.Unlock()
+	l.s.deleteListener(l)
 
 	// close conns
-	var err error
-	for addr, conn := range conns {
-		if cErr := conn.Close(); cErr != nil {
-			err = multierror.Append(err, fmt.Errorf("error closing connection to %s: %w", addr.String(), cErr))
-		}
+	closers := make([]io.Closer, 0, len(conns))
+	for _, c := range conns {
+		closers = append(closers, c)
 	}
+	err := pkgio.Close(closers...)
 
-	l.s.deleteListener(l.port)
+	if sErr := l.stopListening(); sErr != nil {
+		err = multierror.Append(err, sErr)
+	}
 
 	return err
 }
@@ -163,13 +163,11 @@ func (l *listener) stopListening() error {
 	l.cancelAcceptCtx()
 
 	// close pending conns
-	var err error
-	for addr, pendingConn := range pendingConns {
-		if cErr := pendingConn.Close(); cErr != nil {
-			err = multierror.Append(err, fmt.Errorf("error closing pending connection from %s: %w", addr.String(), cErr))
-		}
+	closers := make([]io.Closer, 0, len(pendingConns))
+	for _, c := range pendingConns {
+		closers = append(closers, c)
 	}
-	return err
+	return pkgio.Close(closers...)
 }
 
 func (l *listener) Addr() net.Addr {

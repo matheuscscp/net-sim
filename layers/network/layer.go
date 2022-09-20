@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 
 	"github.com/matheuscscp/net-sim/layers/common"
 	"github.com/matheuscscp/net-sim/layers/link"
 	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
-	"github.com/hashicorp/go-multierror"
 	"github.com/sirupsen/logrus"
 )
 
@@ -274,13 +275,11 @@ func (l *layer) Close() error {
 	cancel()
 
 	// close interfaces
-	var err error
-	for _, intf := range l.intfs {
-		if cErr := intf.Close(); cErr != nil {
-			err = multierror.Append(err, fmt.Errorf("error closing interface %s: %w", intf.Name(), cErr))
-		}
+	closers := make([]io.Closer, len(l.intfs))
+	for i, intf := range l.intfs {
+		closers[i] = intf
 	}
-	return err
+	return pkgio.Close(closers...)
 }
 
 func newLoopbackIntf() Interface {

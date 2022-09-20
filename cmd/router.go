@@ -7,6 +7,7 @@ import (
 	"github.com/matheuscscp/net-sim/config"
 	"github.com/matheuscscp/net-sim/layers/network"
 	"github.com/matheuscscp/net-sim/layers/transport"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/spf13/cobra"
 )
@@ -48,10 +49,7 @@ var routerCmd = &cobra.Command{
 
 		// wait for ctx and close
 		<-ctx.Done()
-		transportLayer.Close()
-		networkLayer.Close()
-
-		return nil
+		return pkgio.Close(transportLayer, networkLayer)
 	},
 }
 

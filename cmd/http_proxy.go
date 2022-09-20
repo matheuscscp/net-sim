@@ -14,6 +14,7 @@ import (
 	"github.com/matheuscscp/net-sim/layers/application"
 	"github.com/matheuscscp/net-sim/layers/network"
 	"github.com/matheuscscp/net-sim/layers/transport"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -155,13 +156,9 @@ func httpProxy(args []string) error {
 			logrus.
 				WithError(err).
 				WithField("src_addr", src).
-				Error("error shutting down server")
+				Error("error shutting down http server")
 		}
 	}
 	wg.Wait()
-	hostTransport.Close()
-	overlayTransport.Close()
-	overlayNetwork.Close()
-
-	return nil
+	return pkgio.Close(overlayTransport, overlayNetwork, hostTransport)
 }
