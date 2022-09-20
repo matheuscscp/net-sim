@@ -142,3 +142,11 @@ func (h *tcpServerHandshake) do(ctx context.Context, c conn) error {
 
 	return nil
 }
+
+func (udp) newClientHandshake() handshake {
+	return nil // no-op
+}
+
+func (udp) newServerHandshake() handshake {
+	return nil // no-op
+}

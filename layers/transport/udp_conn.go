@@ -15,8 +15,6 @@ import (
 )
 
 type (
-	udp struct{}
-
 	udpConn struct {
 		l             *listener
 		remoteAddr    addr
@@ -25,18 +23,6 @@ type (
 		writeDeadline *deadline
 	}
 )
-
-func (udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
-	return DeserializeUDPSegment(datagram)
-}
-
-func (udp) newClientHandshake() handshake {
-	return nil // no-op
-}
-
-func (udp) newServerHandshake() handshake {
-	return nil // no-op
-}
 
 func (udp) newConn(l *listener, remoteAddr addr, _ handshake) conn {
 	return &udpConn{
