@@ -15,8 +15,6 @@ import (
 )
 
 type (
-	tcp struct{}
-
 	tcpConn struct {
 		ctx           context.Context
 		cancelCtx     context.CancelFunc
@@ -30,10 +28,6 @@ type (
 		seq, ack uint32
 	}
 )
-
-func (tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
-	return DeserializeTCPSegment(datagram)
-}
 
 func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 	ctx, cancel := context.WithCancel(context.Background())
