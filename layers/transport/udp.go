@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/matheuscscp/net-sim/layers/common"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -125,10 +126,7 @@ func (u *udpConn) Close() error {
 	// not directed to this conn anymore
 	u.l.deleteConn(u.remoteAddr)
 
-	u.readDeadline.close()
-	u.writeDeadline.close()
-
-	return nil
+	return pkgio.Close(u.readDeadline, u.writeDeadline)
 }
 
 func (u *udpConn) LocalAddr() net.Addr {

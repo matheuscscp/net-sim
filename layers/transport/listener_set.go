@@ -3,13 +3,12 @@ package transport
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 
-	"github.com/hashicorp/go-multierror"
-
-	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,19 +19,6 @@ type (
 
 		listenersMu sync.RWMutex
 		listeners   map[uint16]*listener
-	}
-
-	handshake interface {
-		recv(segment gopacket.TransportLayer)
-		do(ctx context.Context, c conn) error
-	}
-
-	protocolFactory interface {
-		newClientHandshake() handshake
-		newServerHandshake() handshake
-		newConn(l *listener, remoteAddr addr, h handshake) conn
-		newAddr(addr addr) net.Addr
-		decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error)
 	}
 )
 
@@ -135,10 +121,10 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 	}
 }
 
-func (s *listenerSet) deleteListener(port uint16) {
+func (s *listenerSet) deleteListener(l *listener) {
 	s.listenersMu.Lock()
 	if s.listeners != nil {
-		delete(s.listeners, port)
+		delete(s.listeners, l.port)
 	}
 	s.listenersMu.Unlock()
 }
@@ -155,11 +141,9 @@ func (s *listenerSet) Close() error {
 	s.listenersMu.Unlock()
 
 	// close listeners
-	var err error
-	for port, lis := range listeners {
-		if lErr := lis.Close(); lErr != nil {
-			err = multierror.Append(err, fmt.Errorf("error closing connection to %d: %w", port, lErr))
-		}
+	closers := make([]io.Closer, 0, len(listeners))
+	for _, l := range listeners {
+		closers = append(closers, l)
 	}
-	return err
+	return pkgio.Close(closers...)
 }

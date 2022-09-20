@@ -3,12 +3,11 @@ package transport
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 
-	"github.com/hashicorp/go-multierror"
 	"github.com/matheuscscp/net-sim/layers/network"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -151,17 +150,8 @@ func (l *layer) Close() error {
 
 	// close channels
 	close(l.giantBuf)
-	for range l.giantBuf {
-	}
 
-	// close protocols
-	var err error
-	for _, c := range []io.Closer{l.tcp, l.udp} {
-		if cErr := c.Close(); cErr != nil {
-			err = multierror.Append(err, fmt.Errorf("error closing protocol: %w", cErr))
-		}
-	}
-	return err
+	return pkgio.Close(l.tcp, l.udp)
 }
 
 func (l *layer) send(

@@ -10,7 +10,9 @@ import (
 	"github.com/matheuscscp/net-sim/hostnetwork"
 	"github.com/matheuscscp/net-sim/layers/network"
 	"github.com/matheuscscp/net-sim/layers/transport"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -189,13 +191,14 @@ func tcpProxy(args []string) error {
 
 	// wait for ctx and close
 	<-ctx.Done()
-	for _, lis := range listeners {
-		lis.Close()
+	closers := make([]io.Closer, len(listeners))
+	for i, lis := range listeners {
+		closers[i] = lis
 	}
+	err = pkgio.Close(closers...)
 	wg.Wait()
-	hostTransport.Close()
-	overlayTransport.Close()
-	overlayNetwork.Close()
-
-	return nil
+	if cErr := pkgio.Close(overlayTransport, overlayNetwork, hostTransport); cErr != nil {
+		err = multierror.Append(err, cErr)
+	}
+	return err
 }

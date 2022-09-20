@@ -2,7 +2,6 @@ package physical
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -46,7 +45,7 @@ type (
 		ctx       context.Context
 		cancelCtx context.CancelFunc
 		conf      *FullDuplexUnreliableWireConfig
-		conn      *net.UDPConn
+		conn      net.Conn
 		wg        sync.WaitGroup
 		captureCh chan []byte
 	}
@@ -67,33 +66,25 @@ func NewFullDuplexUnreliableWire(
 	if err != nil {
 		return nil, fmt.Errorf("error dialing udp: %w", err)
 	}
-	udpConn, ok := conn.(*net.UDPConn)
-	if !ok {
-		errMsg := "conn is not udp, closing"
-		if err := conn.Close(); err != nil {
-			return nil, fmt.Errorf("%s. error closing conn: %w", errMsg, err)
-		}
-		return nil, errors.New(errMsg)
-	}
 	wireCtx, cancel := context.WithCancel(context.Background())
 	f := &fullDuplexUnreliableWire{
 		ctx:       wireCtx,
 		cancelCtx: cancel,
 		conf:      &conf,
-		conn:      udpConn,
+		conn:      conn,
 	}
 
 	if conf.Capture != nil {
 		// open capture file and pcapng writer
 		captureFile, err := os.Create(conf.Capture.Filename)
 		if err != nil {
-			udpConn.Close()
+			conn.Close()
 			return nil, fmt.Errorf("error creating capture file %s: %w", conf.Capture.Filename, err)
 		}
 		captureWriter, err := pcapgo.NewNgWriter(captureFile, gplayers.LinkTypeEthernet)
 		if err != nil {
 			captureFile.Close()
-			udpConn.Close()
+			conn.Close()
 			return nil, fmt.Errorf("error creating pcapng writer: %w", err)
 		}
 

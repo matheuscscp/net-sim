@@ -247,8 +247,6 @@ func (e *ethernetPort) Close() error {
 
 	// close channels
 	close(e.out)
-	for range e.out {
-	}
 	close(e.in)
 
 	return e.medium.Close()

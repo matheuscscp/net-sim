@@ -82,16 +82,19 @@ func (d *deadline) exceeded() bool {
 	return !d.t.IsZero() && d.t.Before(time.Now())
 }
 
-func (d *deadline) close() {
+func (d *deadline) Close() error {
 	// cancel ctx
 	var cancel context.CancelFunc
 	cancel, d.cancelCtx = d.cancelCtx, nil
-	if cancel != nil {
-		cancel()
+	if cancel == nil {
+		return nil
 	}
+	cancel()
 
 	// notify
 	d.mu.Lock()
 	d.cond.Broadcast()
 	d.mu.Unlock()
+
+	return nil
 }

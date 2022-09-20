@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -125,10 +126,7 @@ func (t *tcpConn) Close() error {
 	}
 	cancel()
 
-	t.readDeadline.close()
-	t.writeDeadline.close()
-
-	return nil
+	return pkgio.Close(t.readDeadline, t.writeDeadline)
 }
 
 func (t *tcpConn) LocalAddr() net.Addr {

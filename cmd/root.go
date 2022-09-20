@@ -36,8 +36,6 @@ func contextWithCancelOnInterrupt(ctx context.Context) (context.Context, context
 		<-sigs
 		signal.Stop(sigs)
 		close(sigs)
-		for range sigs {
-		}
 	}()
 	return ctx, cancel
 }
