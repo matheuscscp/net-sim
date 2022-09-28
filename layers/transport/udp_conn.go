@@ -94,7 +94,7 @@ func (u *udpConn) Write(b []byte) (n int, err error) {
 	// send
 	ctx, cancel, deadlineExceeded := u.writeDeadline.newContext()
 	defer cancel()
-	if u.writeDeadline.exceeded() {
+	if ctx.Err() != nil || u.writeDeadline.exceeded() {
 		return 0, ErrDeadlineExceeded
 	}
 	if err := u.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {

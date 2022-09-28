@@ -16,7 +16,7 @@ type (
 		cancelCtx context.CancelFunc
 		t         time.Time
 		mu        sync.Mutex
-		cond      sync.Cond
+		cond      *sync.Cond
 	}
 )
 
@@ -26,7 +26,7 @@ func newDeadline() *deadline {
 		ctx:       ctx,
 		cancelCtx: cancel,
 	}
-	d.cond = *sync.NewCond(&d.mu)
+	d.cond = sync.NewCond(&d.mu)
 	return d
 }
 
