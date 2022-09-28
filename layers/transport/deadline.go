@@ -4,13 +4,15 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 )
 
 type (
 	// deadline implements an advanced deadline mechanism allowing
 	// for a deadline time point to be set() dynamically and cancel
 	// all the contexts created with newContext() regardless of the
-	// order with which these methods were called.
+	// order with which these two methods were called.
 	deadline struct {
 		ctx       context.Context
 		cancelCtx context.CancelFunc
@@ -46,9 +48,18 @@ func (d *deadline) set(t time.Time) {
 	}()
 }
 
-func (d *deadline) newContext() (context.Context, context.CancelFunc, *bool) {
-	ctx, cancel := context.WithCancel(d.ctx)
+func (d *deadline) newContext(ctx context.Context) (context.Context, context.CancelFunc, *bool) {
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, d.ctx)
 	exceeded := new(bool)
+
+	d.mu.Lock()
+	if d.exceeded() {
+		d.mu.Unlock()
+		cancel()
+		*exceeded = true
+		return ctx, cancel, exceeded
+	}
+	d.mu.Unlock()
 
 	var wg sync.WaitGroup
 	wg.Add(1)

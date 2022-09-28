@@ -16,6 +16,8 @@ import (
 
 type (
 	udpConn struct {
+		ctx           context.Context
+		cancelCtx     context.CancelFunc
 		l             *listener
 		remoteAddr    addr
 		in            chan []byte
@@ -25,7 +27,10 @@ type (
 )
 
 func (udp) newConn(l *listener, remoteAddr addr, _ handshake) conn {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &udpConn{
+		ctx:           ctx,
+		cancelCtx:     cancel,
 		l:             l,
 		remoteAddr:    remoteAddr,
 		in:            make(chan []byte, channelSize),
@@ -52,8 +57,17 @@ func (u *udpConn) recv(segment gopacket.TransportLayer) {
 // Read blocks waiting for one UDP segment. b should have enough space for
 // the whole UDP segment payload (any exceeding bytes will be discarded).
 func (u *udpConn) Read(b []byte) (n int, err error) {
-	ctx, cancel, deadlineExceeded := u.readDeadline.newContext()
+	// create deadline context
+	ctx, cancel, deadlineExceeded := u.readDeadline.newContext(u.ctx)
 	defer cancel()
+	if *deadlineExceeded {
+		return 0, ErrDeadlineExceeded
+	}
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+
+	// read
 	select {
 	case payload := <-u.in:
 		return copy(b, payload), nil
@@ -91,12 +105,17 @@ func (u *udpConn) Write(b []byte) (n int, err error) {
 		Length:  uint16(len(b) + UDPHeaderLength),
 	}
 
-	// send
-	ctx, cancel, deadlineExceeded := u.writeDeadline.newContext()
+	// create deadline context
+	ctx, cancel, deadlineExceeded := u.writeDeadline.newContext(u.ctx)
 	defer cancel()
-	if ctx.Err() != nil || u.writeDeadline.exceeded() {
+	if *deadlineExceeded {
 		return 0, ErrDeadlineExceeded
 	}
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+
+	// write
 	if err := u.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
 		if *deadlineExceeded {
 			return 0, ErrDeadlineExceeded
@@ -112,6 +131,15 @@ func (u *udpConn) Close() error {
 	// not directed to this conn anymore
 	u.l.deleteConn(u.remoteAddr)
 
+	// cancel ctx
+	var cancel context.CancelFunc
+	cancel, u.cancelCtx = u.cancelCtx, nil
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+
+	// close deadlines
 	return pkgio.Close(u.readDeadline, u.writeDeadline)
 }
 
