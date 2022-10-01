@@ -4,14 +4,17 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
+	"github.com/matheuscscp/net-sim/layers/common"
 	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/hashicorp/go-multierror"
+	"github.com/sirupsen/logrus"
 )
 
 type (
@@ -24,6 +27,12 @@ type (
 		hCtx          context.Context
 		readDeadline  *deadline
 		writeDeadline *deadline
+		recvMu        sync.Mutex
+		readMu        sync.Mutex
+		writeMu       sync.Mutex
+
+		readCh  chan []byte
+		readBuf []byte
 
 		seq, ack uint32
 	}
@@ -39,6 +48,7 @@ func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 		h:             h,
 		readDeadline:  newDeadline(),
 		writeDeadline: newDeadline(),
+		readCh:        make(chan []byte, channelSize),
 	}
 }
 
@@ -77,7 +87,37 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 		return
 	}
 
-	// TODO
+	s := segment.(*gplayers.TCP)
+	if s.ACK {
+		// TODO
+	} else {
+		t.recvMu.Lock()
+		defer t.recvMu.Unlock()
+
+		if s.Seq != t.ack {
+			return
+		}
+		ack := t.ack + uint32(len(s.Payload))
+
+		select {
+		case t.readCh <- s.Payload:
+			ackDatagramHeader, ackSegment := t.newDatagramHeaderAndSegment()
+			ackSegment.ACK = true
+			ackSegment.Ack = ack
+			if err := t.l.s.transportLayer.send(t.ctx, ackDatagramHeader, ackSegment); err != nil {
+				logrus.
+					WithError(err).
+					WithField("local_addr", t.l.Addr()).
+					WithField("remote_addr", t.remoteAddr).
+					WithField("segment_seq", s.Seq).
+					WithField("ack", ack).
+					Error("error sending tcp ack")
+				return
+			}
+			t.ack = ack
+		default:
+		}
+	}
 }
 
 func (t *tcpConn) newDatagramHeaderAndSegment() (*gplayers.IPv4, *gplayers.TCP) {
@@ -100,7 +140,41 @@ func (t *tcpConn) Read(b []byte) (n int, err error) {
 		return 0, err
 	}
 
-	return 0, nil // TODO
+	// create deadline context
+	ctx, cancel, deadlineExceeded := t.readDeadline.newContext(t.ctx)
+	defer cancel()
+	if *deadlineExceeded {
+		return 0, ErrDeadlineExceeded
+	}
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+
+	// if some bytes are already available, return them right away
+	if len(t.readBuf) > 0 {
+		n := copy(b, t.readBuf)
+		t.readBuf = t.readBuf[n:]
+		if len(t.readBuf) == 0 {
+			t.readBuf = nil
+		}
+		return n, nil
+	}
+
+	// no bytes available, block waiting for some
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case t.readBuf = <-t.readCh:
+		n := copy(b, t.readBuf)
+		t.readBuf = t.readBuf[n:]
+		if len(t.readBuf) == 0 {
+			t.readBuf = nil
+		}
+		return n, nil
+	}
 }
 
 func (t *tcpConn) Write(b []byte) (n int, err error) {
@@ -108,7 +182,50 @@ func (t *tcpConn) Write(b []byte) (n int, err error) {
 		return 0, err
 	}
 
-	return 0, nil // TODO
+	// validate payload size
+	if len(b) == 0 {
+		return 0, common.ErrCannotSendEmpty
+	}
+
+	// create deadline context
+	ctx, cancel, deadlineExceeded := t.writeDeadline.newContext(t.ctx)
+	defer cancel()
+	if *deadlineExceeded {
+		return 0, ErrDeadlineExceeded
+	}
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+
+	// split in segments
+	nSegments := (len(b) + TCPMTU - 1) / TCPMTU
+	segments := make([]*gplayers.TCP, nSegments)
+	datagramHeaders := make([]*gplayers.IPv4, nSegments)
+	lastSegment := nSegments - 1
+	for i := 0; i < lastSegment; i++ {
+		datagramHeaders[i], segments[i] = t.newDatagramHeaderAndSegment()
+		segments[i].Payload = b[i*TCPMTU : (i+1)*TCPMTU]
+	}
+	datagramHeaders[lastSegment], segments[lastSegment] = t.newDatagramHeaderAndSegment()
+	segments[lastSegment].Payload = b[lastSegment*TCPMTU:]
+
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+
+	// send segments
+	for i, s := range segments {
+		s.Seq = t.seq
+		t.seq += uint32(len(s.Payload))
+
+		if err := t.l.s.transportLayer.send(ctx, datagramHeaders[i], s); err != nil {
+			if *deadlineExceeded {
+				return 0, ErrDeadlineExceeded
+			}
+			return 0, fmt.Errorf("error sending tcp segment: %w", err)
+		}
+	}
+
+	return len(b), nil
 }
 
 func (t *tcpConn) Close() error {
