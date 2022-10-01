@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"time"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 )
+
+func init() {
+	rand.Seed(time.Now().UnixMilli())
+}
 
 type (
 	handshake interface {
