@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -95,14 +96,22 @@ func tcpProxy(args []string) error {
 		pureWriter struct{ io.Writer }
 		pureReader struct{ io.Reader }
 	)
-	copyConn := func(dst, src net.Conn) error {
-		if _, err := io.Copy(&pureWriter{dst}, &pureReader{src}); err != nil {
+	copyStream := func(dst io.Writer, src io.Reader) (buf *bytes.Buffer, err error) {
+		// capture stream from src with a tee and print debug log
+		tee := src
+		if debug {
+			buf = &bytes.Buffer{}
+			tee = io.TeeReader(src, buf)
+		}
+
+		// copy stream from tee(src) to dst
+		if _, err := io.Copy(&pureWriter{dst}, &pureReader{tee}); err != nil {
 			if !transport.IsUseOfClosedConn(err) &&
 				!errors.Is(err, context.Canceled) {
-				return err
+				return buf, err
 			}
 		}
-		return nil
+		return buf, nil
 	}
 	var wg sync.WaitGroup
 	for i, lis := range listeners {
@@ -168,10 +177,16 @@ func tcpProxy(args []string) error {
 							server.Close()
 							wg3.Done()
 						}()
-						if err := copyConn(server, client); err != nil {
+						buf, err := copyStream(server, client)
+						if err != nil {
 							l.
 								WithError(err).
-								Error("error copying from client to server")
+								Error("error copying stream from client to server")
+						}
+						if debug {
+							l.
+								WithField("string", buf.String()).
+								Debug("stream from client to server")
 						}
 					}()
 
@@ -182,10 +197,16 @@ func tcpProxy(args []string) error {
 							client.Close()
 							wg3.Done()
 						}()
-						if err := copyConn(client, server); err != nil {
+						buf, err := copyStream(client, server)
+						if err != nil {
 							l.
 								WithError(err).
-								Error("error copying from server to client")
+								Error("error copying stream from server to client")
+						}
+						if debug {
+							l.
+								WithField("string", buf.String()).
+								Debug("stream from server to client")
 						}
 					}()
 				}()
