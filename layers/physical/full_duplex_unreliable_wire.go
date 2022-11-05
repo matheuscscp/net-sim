@@ -112,7 +112,9 @@ func NewFullDuplexUnreliableWire(
 					l.
 						WithError(err).
 						Error("error capturing data")
+					continue
 				}
+				captureWriter.Flush()
 			}
 		}()
 	}
