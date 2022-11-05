@@ -27,9 +27,6 @@ func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
 	if segment == nil || len(segment.Payload) == 0 { // a UDP segment must always have a payload
 		return nil, fmt.Errorf("error deserializing udp layer: %w", pkt.ErrorLayer().Error())
 	}
-	if err := validateChecksum(datagram, segment); err != nil {
-		return nil, err
-	}
 	return segment, nil
 }
 
