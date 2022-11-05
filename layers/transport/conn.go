@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
+
 	"github.com/google/gopacket"
 )
 
@@ -20,4 +22,23 @@ type (
 		handshake() error
 		recv(segment gopacket.TransportLayer)
 	}
+
+	// clientConn represents a client connection. It wraps a conn for
+	// overriding the Close() method in order to close the listener
+	// that was created solely for the purpose of creating the wrapped
+	// conn.
+	clientConn struct {
+		net.Conn
+	}
 )
+
+func (cc *clientConn) Close() error {
+	var l *listener
+	switch c := cc.Conn.(type) {
+	case *tcpConn:
+		l = c.l
+	case *udpConn:
+		l = c.l
+	}
+	return pkgio.Close(cc.Conn, l)
+}

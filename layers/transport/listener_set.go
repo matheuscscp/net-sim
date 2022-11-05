@@ -83,7 +83,11 @@ func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error
 	}
 
 	// then dial
-	return l.Dial(ctx, address)
+	c, err := l.Dial(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	return &clientConn{c}, nil
 }
 
 func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
