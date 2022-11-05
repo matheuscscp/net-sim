@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -95,8 +96,11 @@ func tcpProxy(args []string) error {
 		pureReader struct{ io.Reader }
 	)
 	copyConn := func(dst, src net.Conn) error {
-		if _, err := io.Copy(&pureWriter{dst}, &pureReader{src}); err != nil && !transport.IsUseOfClosedConn(err) {
-			return err
+		if _, err := io.Copy(&pureWriter{dst}, &pureReader{src}); err != nil {
+			if !transport.IsUseOfClosedConn(err) &&
+				!errors.Is(err, context.Canceled) {
+				return err
+			}
 		}
 		return nil
 	}
