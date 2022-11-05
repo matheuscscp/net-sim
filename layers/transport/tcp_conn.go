@@ -101,6 +101,8 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 
 		select {
 		case t.readCh <- s.Payload:
+			// FIXME(pimenta, #68): inefficient use of the network sending one ack
+			// for every segment
 			ackDatagramHeader, ackSegment := t.newDatagramHeaderAndSegment()
 			ackSegment.ACK = true
 			ackSegment.Ack = ack
