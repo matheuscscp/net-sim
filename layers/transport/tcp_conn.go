@@ -87,20 +87,20 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 		return
 	}
 
-	s := segment.(*gplayers.TCP)
-	if s.ACK {
-		// TODO
+	tcpSegment := segment.(*gplayers.TCP)
+	if tcpSegment.ACK {
+		// TODO(pimenta): implement write window
 	} else {
 		t.recvMu.Lock()
 		defer t.recvMu.Unlock()
 
-		if s.Seq != t.ack {
+		if tcpSegment.Seq != t.ack { // TODO(pimenta): implement read window
 			return
 		}
-		ack := t.ack + uint32(len(s.Payload))
+		ack := t.ack + uint32(len(tcpSegment.Payload))
 
 		select {
-		case t.readCh <- s.Payload:
+		case t.readCh <- tcpSegment.Payload:
 			// FIXME(pimenta, #68): inefficient use of the network sending one ack
 			// for every segment
 			ackDatagramHeader, ackSegment := t.newDatagramHeaderAndSegment()
@@ -111,7 +111,7 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 					WithError(err).
 					WithField("local_addr", t.l.Addr()).
 					WithField("remote_addr", t.remoteAddr).
-					WithField("segment_seq", s.Seq).
+					WithField("segment_seq", tcpSegment.Seq).
 					WithField("ack", ack).
 					Error("error sending tcp ack")
 				return
