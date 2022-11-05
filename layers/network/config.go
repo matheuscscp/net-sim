@@ -9,7 +9,7 @@ import (
 
 func NewLayerFromConfigFile(ctx context.Context, file string) (Layer, error) {
 	var conf LayerConfig
-	if err := config.ReadYAML(file, &conf); err != nil {
+	if err := config.ReadYAMLFileAndUnmarshal(file, &conf); err != nil {
 		return nil, fmt.Errorf("error reading yaml overlay network config file: %w", err)
 	}
 	l, err := NewLayer(ctx, conf)

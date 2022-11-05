@@ -22,7 +22,7 @@ var routerCmd = &cobra.Command{
 			Interfaces []network.InterfaceConfig `yaml:"interfaces"`
 			Routes     []network.RouteConfig     `yaml:"routes"`
 		}
-		if err := config.ReadYAML(args[0], &conf); err != nil {
+		if err := config.ReadYAMLFileAndUnmarshal(args[0], &conf); err != nil {
 			return fmt.Errorf("error reading yaml router config file: %w", err)
 		}
 
