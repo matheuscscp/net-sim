@@ -181,7 +181,7 @@ func tcpProxy(args []string) error {
 						if err := copyConn(client, server); err != nil {
 							l.
 								WithError(err).
-								Errorf("error copying from server to client")
+								Error("error copying from server to client")
 						}
 					}()
 				}()
