@@ -230,8 +230,8 @@ func (e *ethernetPort) decapAndRecv(frameBuf []byte) {
 
 func (e *ethernetPort) recv(frame *gplayers.Ethernet) {
 	select {
-	case <-e.ctx.Done():
 	case e.in <- frame:
+	default:
 	}
 }
 
