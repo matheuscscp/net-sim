@@ -127,10 +127,6 @@ func (u *udpConn) Write(b []byte) (n int, err error) {
 }
 
 func (u *udpConn) Close() error {
-	// remove conn from listener so arriving segments are
-	// not directed to this conn anymore
-	u.l.deleteConn(u.remoteAddr)
-
 	// cancel ctx
 	var cancel context.CancelFunc
 	cancel, u.cancelCtx = u.cancelCtx, nil
@@ -138,6 +134,10 @@ func (u *udpConn) Close() error {
 		return nil
 	}
 	cancel()
+
+	// remove conn from listener so arriving segments are
+	// not directed to this conn anymore
+	u.l.deleteConn(u.remoteAddr)
 
 	// close deadlines
 	return pkgio.Close(u.readDeadline, u.writeDeadline)

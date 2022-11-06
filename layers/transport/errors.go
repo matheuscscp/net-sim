@@ -17,6 +17,8 @@ var (
 	ErrProtocolClosed       = errors.New("protocol closed")
 	ErrListenerClosed       = fmt.Errorf("listener closed (os error msg: %s)", useOfClosedConn)
 	ErrDeadlineExceeded     = errors.New("deadline exceeded")
+
+	errTransmissionTimeout = errors.New("transmission timeout")
 )
 
 // IsUseOfClosedConn tells whether the error is due to the port/connection

@@ -14,7 +14,7 @@ I've always wanted to write some code that simulates networking devices/agents/a
 * [X] Network Layer: IP/ARP
 * [X] Network Layer: Router
 * [X] Transport Layer: UDP
-* [ ] Transport Layer: TCP
+* [X] Transport Layer: TCP
 * [X] Application Layer: TCP proxy
 * [X] Application Layer: HTTP proxy
 
