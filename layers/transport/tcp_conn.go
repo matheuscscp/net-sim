@@ -14,41 +14,46 @@ import (
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/hashicorp/go-multierror"
-	"github.com/sirupsen/logrus"
 )
 
 type (
 	tcpConn struct {
-		ctx           context.Context
-		cancelCtx     context.CancelFunc
-		l             *listener
-		remoteAddr    addr
-		h             handshake
-		hCtx          context.Context
-		readDeadline  *deadline
-		writeDeadline *deadline
-		recvMu        sync.Mutex
-		readMu        sync.Mutex
+		ctx        context.Context
+		cancelCtx  context.CancelFunc
+		l          *listener
+		remoteAddr addr
+		h          handshake
+		hCtx       context.Context
+
+		ack          uint32
+		readMu       sync.Mutex
+		readCh       chan *gplayers.TCP // non acked segments buffer
+		readDeadline *deadline
+		readBuf      []byte            // acked data ready to be returned
+		readCache    map[uint32][]byte // (non acked) cached segments mapped by sequence number
+
+		seq           uint32
 		writeMu       sync.Mutex
-
-		readCh  chan []byte
-		readBuf []byte
-
-		seq, ack uint32
+		writeCh       chan uint32 // a stream of ack numbers
+		writeDeadline *deadline
 	}
 )
 
 func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &tcpConn{
-		ctx:           ctx,
-		cancelCtx:     cancel,
-		l:             l,
-		remoteAddr:    remoteAddr,
-		h:             h,
-		readDeadline:  newDeadline(),
+		ctx:        ctx,
+		cancelCtx:  cancel,
+		l:          l,
+		remoteAddr: remoteAddr,
+		h:          h,
+
+		readCh:       make(chan *gplayers.TCP, channelSize),
+		readDeadline: newDeadline(),
+		readCache:    make(map[uint32][]byte),
+
+		writeCh:       make(chan uint32, channelSize),
 		writeDeadline: newDeadline(),
-		readCh:        make(chan []byte, channelSize),
 	}
 }
 
@@ -88,37 +93,26 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 	}
 
 	tcpSegment := segment.(*gplayers.TCP)
+
+	// handle ACK
 	if tcpSegment.ACK {
-		// TODO(pimenta): implement write window
-	} else {
-		t.recvMu.Lock()
-		defer t.recvMu.Unlock()
-
-		if tcpSegment.Seq != t.ack { // TODO(pimenta): implement read window
-			return
-		}
-		ack := t.ack + uint32(len(tcpSegment.Payload))
-
 		select {
-		case t.readCh <- tcpSegment.Payload:
-			// FIXME(pimenta, #68): inefficient use of the network sending one ack
-			// for every segment
-			ackDatagramHeader, ackSegment := t.newDatagramHeaderAndSegment()
-			ackSegment.ACK = true
-			ackSegment.Ack = ack
-			if err := t.l.s.transportLayer.send(t.ctx, ackDatagramHeader, ackSegment); err != nil {
-				logrus.
-					WithError(err).
-					WithField("local_addr", t.l.Addr()).
-					WithField("remote_addr", t.remoteAddr).
-					WithField("segment_seq", tcpSegment.Seq).
-					WithField("ack", ack).
-					Error("error sending tcp ack")
-				return
-			}
-			t.ack = ack
+		case t.writeCh <- tcpSegment.Ack:
 		default:
 		}
+	}
+
+	// handle data
+	if len(tcpSegment.Payload) > 0 {
+		select {
+		case t.readCh <- tcpSegment:
+		default:
+		}
+	}
+
+	// handle FIN
+	if tcpSegment.FIN {
+		t.Close()
 	}
 }
 
@@ -133,27 +127,29 @@ func (t *tcpConn) newDatagramHeaderAndSegment() (*gplayers.IPv4, *gplayers.TCP) 
 	segment := &gplayers.TCP{
 		DstPort: gplayers.TCPPort(t.remoteAddr.port),
 		SrcPort: gplayers.TCPPort(t.l.port),
+		Window:  TCPWindowSize,
 	}
 	return datagramHeader, segment
 }
 
-func (t *tcpConn) Read(b []byte) (n int, err error) {
+func (t *tcpConn) Read(b []byte) (int, error) {
 	if err := t.waitHandshake(); err != nil {
 		return 0, err
 	}
 
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+
 	// create deadline context
 	ctx, cancel, deadlineExceeded := t.readDeadline.newContext(t.ctx)
 	defer cancel()
+	ctxDone := ctx.Done()
 	if *deadlineExceeded {
 		return 0, ErrDeadlineExceeded
 	}
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
-
-	t.readMu.Lock()
-	defer t.readMu.Unlock()
 
 	// if some bytes are already available, return them right away
 	if len(t.readBuf) > 0 {
@@ -166,10 +162,50 @@ func (t *tcpConn) Read(b []byte) (n int, err error) {
 	}
 
 	// no bytes available, block waiting for some
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case t.readBuf = <-t.readCh:
+	for {
+		// look up cache first
+		var ok bool
+		if t.readBuf, ok = t.readCache[t.ack]; ok {
+			delete(t.readCache, t.ack)
+		} else {
+			// wait for an event if cache does not contain t.ack
+			select {
+			case <-ctxDone:
+				if *deadlineExceeded {
+					return 0, ErrDeadlineExceeded
+				}
+				return 0, ctx.Err()
+			case segment := <-t.readCh:
+				if seq := segment.Seq; seq != t.ack {
+					// sequence number does not match the next expected byte (t.ack).
+					// this might be a future segment, so just cache it for now.
+					// make room in the cache if necessary
+					if len(t.readCache) == tcpMaxReadCacheItems {
+						for k := range t.readCache {
+							delete(t.readCache, k)
+							break
+						}
+					}
+					t.readCache[seq] = segment.Payload
+					continue
+				}
+				// sequence number matches the next expected byte. grab the payload
+				t.readBuf = segment.Payload
+			}
+		}
+
+		// FIXME(pimenta, #68)
+		t.ack += uint32(len(t.readBuf))
+		ackDatagramHeader, ackSegment := t.newDatagramHeaderAndSegment()
+		ackSegment.ACK = true
+		ackSegment.Ack = t.ack
+		if err := t.l.s.transportLayer.send(ctx, ackDatagramHeader, ackSegment); err != nil {
+			if *deadlineExceeded {
+				return 0, ErrDeadlineExceeded
+			}
+			return 0, fmt.Errorf("error sending tcp ack segment: %w", err)
+		}
+
 		n := copy(b, t.readBuf)
 		t.readBuf = t.readBuf[n:]
 		if len(t.readBuf) == 0 {
@@ -179,19 +215,24 @@ func (t *tcpConn) Read(b []byte) (n int, err error) {
 	}
 }
 
-func (t *tcpConn) Write(b []byte) (n int, err error) {
+func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 	if err := t.waitHandshake(); err != nil {
 		return 0, err
 	}
 
 	// validate payload size
-	if len(b) == 0 {
+	nBytes := int64(len(b))
+	if nBytes == 0 {
 		return 0, common.ErrCannotSendEmpty
 	}
+
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
 
 	// create deadline context
 	ctx, cancel, deadlineExceeded := t.writeDeadline.newContext(t.ctx)
 	defer cancel()
+	ctxDone := ctx.Done()
 	if *deadlineExceeded {
 		return 0, ErrDeadlineExceeded
 	}
@@ -199,35 +240,81 @@ func (t *tcpConn) Write(b []byte) (n int, err error) {
 		return 0, ctx.Err()
 	}
 
-	// split in segments
-	nSegments := (len(b) + TCPMTU - 1) / TCPMTU
-	segments := make([]*gplayers.TCP, nSegments)
-	datagramHeaders := make([]*gplayers.IPv4, nSegments)
-	lastSegment := nSegments - 1
-	for i := 0; i < lastSegment; i++ {
-		datagramHeaders[i], segments[i] = t.newDatagramHeaderAndSegment()
-		segments[i].Payload = b[i*TCPMTU : (i+1)*TCPMTU]
-	}
-	datagramHeaders[lastSegment], segments[lastSegment] = t.newDatagramHeaderAndSegment()
-	segments[lastSegment].Payload = b[lastSegment*TCPMTU:]
+	// send loop
+	defer func() { t.seq += uint32(ackedBytes) }()
+	for nextByte := int64(0); int64(ackedBytes) < nBytes; {
+		// calculate end of window
+		endOfWindow := int64(ackedBytes) + TCPWindowSize
+		if endOfWindow > nBytes {
+			endOfWindow = nBytes
+		}
 
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
-
-	// send segments
-	for i, s := range segments {
-		s.Seq = t.seq
-		t.seq += uint32(len(s.Payload))
-
-		if err := t.l.s.transportLayer.send(ctx, datagramHeaders[i], s); err != nil {
-			if *deadlineExceeded {
-				return 0, ErrDeadlineExceeded
+		// send from nextByte (inclusive) up to endOfWindow (exclusive)
+		for nextByte < endOfWindow {
+			// calculate end of segment payload
+			endOfPayload := nextByte + TCPMTU
+			if endOfPayload > endOfWindow {
+				endOfPayload = endOfWindow
 			}
-			return 0, fmt.Errorf("error sending tcp segment: %w", err)
+
+			// send segment
+			datagramHeader, segment := t.newDatagramHeaderAndSegment()
+			segment.Seq = t.seq + uint32(nextByte)
+			segment.Payload = b[nextByte:endOfPayload]
+			if err = t.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
+				if *deadlineExceeded {
+					err = ErrDeadlineExceeded
+					return
+				}
+				err = fmt.Errorf("error sending tcp segment: %w", err)
+				return
+			}
+
+			nextByte = endOfPayload
+		}
+
+		// wait for events
+		err = func() error {
+			timeout := time.NewTimer(200 * time.Millisecond)
+			defer timeout.Stop()
+			select {
+			case <-ctxDone:
+				if *deadlineExceeded {
+					return ErrDeadlineExceeded
+				}
+				return ctx.Err()
+			case ack := <-t.writeCh:
+				// handle ack number
+				seq := int64(t.seq) + int64(ackedBytes)
+				delta := int64(ack) - seq
+				if delta < 0 {
+					// delta is negative. the only valid way for this to happen is
+					// if the ack number just wrapped around the uint32 limit. in
+					// this case we add back the lost 2^32 part
+					delta += (int64(1) << 32)
+				}
+				if delta > 2*TCPWindowSize {
+					// TODO(pimenta, #69): add observability for dropped stray/delayed ack
+					// segment
+					return nil
+				}
+				// process valid positive delta
+				ackedBytes += int(delta)
+				if int(nextByte) < ackedBytes {
+					nextByte = int64(ackedBytes)
+				}
+			case <-timeout.C:
+				// transmission timeout. reset window
+				nextByte = int64(ackedBytes)
+			}
+			return nil
+		}()
+		if err != nil {
+			return
 		}
 	}
 
-	return len(b), nil
+	return
 }
 
 func (t *tcpConn) Close() error {
@@ -238,6 +325,20 @@ func (t *tcpConn) Close() error {
 		return nil
 	}
 	cancel()
+
+	// send FIN segment
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	finDatagramHeader, finSegment := t.newDatagramHeaderAndSegment()
+	finSegment.FIN = true
+	finSegment.Seq = t.seq
+	if err := t.l.s.transportLayer.send(ctx, finDatagramHeader, finSegment); err != nil {
+		return fmt.Errorf("error sending tcp fin segment: %w", err)
+	}
+
+	// remove conn from listener so arriving segments are
+	// not directed to this conn anymore
+	t.l.deleteConn(t.remoteAddr)
 
 	return pkgio.Close(t.readDeadline, t.writeDeadline)
 }

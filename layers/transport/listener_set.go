@@ -111,10 +111,7 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 	}
 	l, ok := s.listeners[dstPort]
 	s.listenersMu.RUnlock()
-	if !ok {
-		return
-	}
-	if !l.matchesDstIPAddress(dstIPAddress) {
+	if !ok || !l.matchesDstIPAddress(dstIPAddress) { // TODO(pimenta, #70): reply ACK+RST
 		return
 	}
 

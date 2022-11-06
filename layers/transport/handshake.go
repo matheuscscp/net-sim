@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"time"
@@ -39,11 +40,11 @@ func (tcp) newClientHandshake() handshake {
 }
 
 func (t *tcpClientHandshake) recv(segment gopacket.TransportLayer) {
-	s := segment.(*gplayers.TCP)
+	tcpSegment := segment.(*gplayers.TCP)
 	switch {
-	case s.SYN && s.ACK:
+	case tcpSegment.SYN && tcpSegment.ACK:
 		select {
-		case t.synack <- tcpSynAck{seq: s.Seq, ack: s.Ack}:
+		case t.synack <- tcpSynAck{seq: tcpSegment.Seq, ack: tcpSegment.Ack}:
 		default:
 		}
 	}
@@ -52,30 +53,49 @@ func (t *tcpClientHandshake) recv(segment gopacket.TransportLayer) {
 func (t *tcpClientHandshake) do(ctx context.Context, c conn) error {
 	tc := c.(*tcpConn)
 
-	// send SYN segment
 	seq := rand.Uint32()
-	datagramHeader, segment := tc.newDatagramHeaderAndSegment()
-	segment.SYN = true
-	segment.Seq = seq
-	if err := tc.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
-		return fmt.Errorf("error sending tcp syn segment: %w", err)
-	}
-
-	// receive SYNACK segment
 	var ack uint32
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case synack := <-t.synack:
-		if synack.ack != seq+1 {
-			return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, synack.ack)
+	for numAttempt := 0; ; numAttempt++ {
+		// send SYN segment
+		datagramHeader, segment := tc.newDatagramHeaderAndSegment()
+		segment.SYN = true
+		segment.Seq = seq
+		if err := tc.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
+			return fmt.Errorf("error sending tcp syn segment: %w", err)
 		}
-		seq++
-		ack = synack.seq + 1
+
+		// receive SYNACK segment
+		err := func() error {
+			timeoutSecs := 1 << numAttempt
+			if timeoutSecs <= 0 || 60 < timeoutSecs {
+				timeoutSecs = 60
+			}
+			timeout := time.NewTimer(time.Second * time.Duration(timeoutSecs))
+			defer timeout.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case synack := <-t.synack:
+				if synack.ack != seq+1 {
+					return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, synack.ack)
+				}
+				seq++
+				ack = synack.seq + 1
+			case <-timeout.C:
+				return errTransmissionTimeout
+			}
+			return nil
+		}()
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errTransmissionTimeout) {
+			return err
+		}
 	}
 
 	// send ACK segment
-	datagramHeader, segment = tc.newDatagramHeaderAndSegment()
+	datagramHeader, segment := tc.newDatagramHeaderAndSegment()
 	segment.ACK = true
 	segment.Ack = ack
 	if err := tc.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
@@ -93,16 +113,16 @@ func (tcp) newServerHandshake() handshake {
 }
 
 func (t *tcpServerHandshake) recv(segment gopacket.TransportLayer) {
-	s := segment.(*gplayers.TCP)
+	tcpSegment := segment.(*gplayers.TCP)
 	switch {
-	case s.SYN && !s.ACK:
+	case tcpSegment.SYN && !tcpSegment.ACK:
 		select {
-		case t.syn <- s.Seq:
+		case t.syn <- tcpSegment.Seq:
 		default:
 		}
-	case s.ACK && !s.SYN:
+	case tcpSegment.ACK && !tcpSegment.SYN:
 		select {
-		case t.ack <- s.Ack:
+		case t.ack <- tcpSegment.Ack:
 		default:
 		}
 	}
@@ -120,26 +140,45 @@ func (t *tcpServerHandshake) do(ctx context.Context, c conn) error {
 		ack = seq + 1
 	}
 
-	// send SYNACK segment
 	seq := rand.Uint32()
-	datagramHeader, segment := tc.newDatagramHeaderAndSegment()
-	segment.SYN = true
-	segment.Seq = seq
-	segment.ACK = true
-	segment.Ack = ack
-	if err := tc.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
-		return fmt.Errorf("error sending tcp synack segment: %w", err)
-	}
-
-	// receive ACK segment
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case ack := <-t.ack:
-		if ack != seq+1 {
-			return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, ack)
+	for numAttempt := 0; ; numAttempt++ {
+		// send SYNACK segment
+		datagramHeader, segment := tc.newDatagramHeaderAndSegment()
+		segment.SYN = true
+		segment.Seq = seq
+		segment.ACK = true
+		segment.Ack = ack
+		if err := tc.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
+			return fmt.Errorf("error sending tcp synack segment: %w", err)
 		}
-		seq++
+
+		// receive ACK segment
+		err := func() error {
+			timeoutSecs := 1 << numAttempt
+			if timeoutSecs <= 0 || 60 < timeoutSecs {
+				timeoutSecs = 60
+			}
+			timeout := time.NewTimer(time.Second * time.Duration(timeoutSecs))
+			defer timeout.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case ack := <-t.ack:
+				if ack != seq+1 {
+					return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, ack)
+				}
+				seq++
+			case <-timeout.C:
+				return errTransmissionTimeout
+			}
+			return nil
+		}()
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errTransmissionTimeout) {
+			return err
+		}
 	}
 
 	tc.seq = seq

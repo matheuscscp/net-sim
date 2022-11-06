@@ -15,6 +15,10 @@ const (
 	// allowed on the payload of a TCP segment (the transport layer name for a packet).
 	TCPMTU = network.MTU - TCPHeaderLength
 
+	// TCPWindowSize is the maximum amount of bytes that TCP will send before blocking
+	// and waiting for the respective ACKs.
+	TCPWindowSize = (1 << 16) - 1
+
 	// UDP is the "udp" network.
 	UDP = "udp"
 
@@ -27,4 +31,6 @@ const (
 
 	channelSize  = 1024
 	demuxThreads = 16
+
+	tcpMaxReadCacheItems = (TCPWindowSize + TCPMTU - 1) / TCPMTU
 )
