@@ -325,8 +325,8 @@ func (i *interfaceImpl) decapAndRecv(frame *gplayers.Ethernet) {
 
 func (i *interfaceImpl) recv(datagram *gplayers.IPv4) {
 	select {
-	case <-i.ctx.Done():
 	case i.in <- datagram:
+	default:
 	}
 }
 

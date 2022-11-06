@@ -85,8 +85,8 @@ func NewLayer(networkLayer network.Layer) Layer {
 		defer l.wg.Done()
 		networkLayer.Listen(ctx, func(datagram *gplayers.IPv4) {
 			select {
-			case <-ctx.Done():
 			case l.giantBuf <- datagram:
+			default:
 			}
 		})
 	}()
