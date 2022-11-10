@@ -275,7 +275,7 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 
 		// wait for events
 		err = func() error {
-			timeout := time.NewTimer(200 * time.Millisecond)
+			timeout := time.NewTimer(tcpRetransmissionTimeout)
 			defer timeout.Stop()
 			select {
 			case <-ctxDone:
