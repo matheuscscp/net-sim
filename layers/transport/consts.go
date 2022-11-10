@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"time"
+
 	"github.com/matheuscscp/net-sim/layers/network"
 )
 
@@ -32,5 +34,6 @@ const (
 	channelSize  = 1024
 	demuxThreads = 16
 
-	tcpMaxReadCacheItems = (TCPWindowSize + TCPMTU - 1) / TCPMTU
+	tcpRetransmissionTimeout = 200 * time.Millisecond
+	tcpMaxReadCacheItems     = (TCPWindowSize + TCPMTU - 1) / TCPMTU
 )
