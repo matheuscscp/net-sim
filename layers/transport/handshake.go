@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand"
 	"time"
@@ -55,7 +54,7 @@ func (t *tcpClientHandshake) do(ctx context.Context, c conn) error {
 
 	seq := rand.Uint32()
 	var ack uint32
-	for numAttempt := 0; ; numAttempt++ {
+	err := retryWithBackoff(ctx, func(ctx context.Context) error {
 		// send SYN segment
 		datagramHeader, segment := tc.newDatagramHeaderAndSegment()
 		segment.SYN = true
@@ -65,33 +64,21 @@ func (t *tcpClientHandshake) do(ctx context.Context, c conn) error {
 		}
 
 		// receive SYNACK segment
-		err := func() error {
-			timeoutSecs := 1 << numAttempt
-			if timeoutSecs <= 0 || 60 < timeoutSecs {
-				timeoutSecs = 60
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case synack := <-t.synack:
+			if synack.ack != seq+1 {
+				return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, synack.ack)
 			}
-			timeout := time.NewTimer(time.Second * time.Duration(timeoutSecs))
-			defer timeout.Stop()
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case synack := <-t.synack:
-				if synack.ack != seq+1 {
-					return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, synack.ack)
-				}
-				seq++
-				ack = synack.seq + 1
-			case <-timeout.C:
-				return errTransmissionTimeout
-			}
-			return nil
-		}()
-		if err == nil {
-			break
+			seq++
+			ack = synack.seq + 1
 		}
-		if !errors.Is(err, errTransmissionTimeout) {
-			return err
-		}
+
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	// send ACK segment
@@ -141,7 +128,7 @@ func (t *tcpServerHandshake) do(ctx context.Context, c conn) error {
 	}
 
 	seq := rand.Uint32()
-	for numAttempt := 0; ; numAttempt++ {
+	err := retryWithBackoff(ctx, func(ctx context.Context) error {
 		// send SYNACK segment
 		datagramHeader, segment := tc.newDatagramHeaderAndSegment()
 		segment.SYN = true
@@ -153,32 +140,20 @@ func (t *tcpServerHandshake) do(ctx context.Context, c conn) error {
 		}
 
 		// receive ACK segment
-		err := func() error {
-			timeoutSecs := 1 << numAttempt
-			if timeoutSecs <= 0 || 60 < timeoutSecs {
-				timeoutSecs = 60
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ack := <-t.ack:
+			if ack != seq+1 {
+				return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, ack)
 			}
-			timeout := time.NewTimer(time.Second * time.Duration(timeoutSecs))
-			defer timeout.Stop()
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case ack := <-t.ack:
-				if ack != seq+1 {
-					return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, ack)
-				}
-				seq++
-			case <-timeout.C:
-				return errTransmissionTimeout
-			}
-			return nil
-		}()
-		if err == nil {
-			break
+			seq++
 		}
-		if !errors.Is(err, errTransmissionTimeout) {
-			return err
-		}
+
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	tc.seq = seq
