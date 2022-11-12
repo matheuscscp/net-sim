@@ -9,7 +9,6 @@ import (
 
 	gplayers "github.com/google/gopacket/layers"
 	pkgio "github.com/matheuscscp/net-sim/pkg/io"
-	"github.com/sirupsen/logrus"
 )
 
 type (
@@ -90,15 +89,11 @@ func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error
 	return &clientConn{c}, nil
 }
 
-func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
+func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) error {
 	// decap
 	segment, err := s.protocolFactory.decap(datagram)
 	if err != nil {
-		logrus.
-			WithError(err).
-			WithField("datagram", datagram).
-			Error("error decapsulating transport layer")
-		return
+		return fmt.Errorf("error decapsulating transport layer: %w", err)
 	}
 	flow := segment.TransportFlow()
 
@@ -107,12 +102,15 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 	s.listenersMu.RLock()
 	if s.listeners == nil {
 		s.listenersMu.RUnlock()
-		return
+		return ErrProtocolClosed
 	}
 	l, ok := s.listeners[dstPort]
 	s.listenersMu.RUnlock()
-	if !ok || !l.matchesDstIPAddress(dstIPAddress) { // TODO(pimenta, #70): reply ACK+RST
-		return
+	if !ok || !l.matchesDstIPAddress(dstIPAddress) {
+		return &ListenerNotFoundError{
+			Segment: segment,
+			Addr:    fmt.Sprintf("%s:%d", dstIPAddress, dstPort),
+		}
 	}
 
 	// find conn and receive
@@ -120,6 +118,8 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) {
 	if c := l.findConnOrCreatePending(addr{srcPort, srcIPAddress}); c != nil {
 		c.recv(segment)
 	}
+
+	return nil
 }
 
 func (s *listenerSet) deleteListener(l *listener) {

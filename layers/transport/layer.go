@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
+	"github.com/sirupsen/logrus"
 )
 
 type (
@@ -104,11 +106,37 @@ func NewLayer(networkLayer network.Layer) Layer {
 				case <-ctxDone:
 					return
 				case datagram := <-l.giantBuf:
+					var err error
 					switch datagram.Protocol {
 					case gplayers.IPProtocolTCP:
-						l.tcp.decapAndDemux(datagram)
+						if err = l.tcp.decapAndDemux(datagram); err != nil {
+							var notFoundErr *ListenerNotFoundError
+							if errors.As(err, &notFoundErr) {
+								datagramHeader := &gplayers.IPv4{
+									DstIP:    datagram.SrcIP,
+									SrcIP:    datagram.DstIP,
+									Protocol: gplayers.IPProtocolTCP,
+								}
+								origin := notFoundErr.Segment.(*gplayers.TCP)
+								segment := &gplayers.TCP{
+									DstPort: origin.SrcPort,
+									SrcPort: origin.DstPort,
+									RST:     true,
+									ACK:     true,
+								}
+								if err = l.send(ctx, datagramHeader, segment); err != nil {
+									err = fmt.Errorf("error sending tcp rstack segment: %w", err)
+								}
+							}
+						}
 					case gplayers.IPProtocolUDP:
-						l.udp.decapAndDemux(datagram)
+						err = l.udp.decapAndDemux(datagram)
+					}
+					if err != nil {
+						logrus.
+							WithError(err).
+							WithField("datagram", datagram).
+							Error("error in decapAndDemux()")
 					}
 				}
 			}

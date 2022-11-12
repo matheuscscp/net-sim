@@ -22,6 +22,7 @@ type (
 
 	tcpClientHandshake struct {
 		synack chan tcpSynAck
+		rstack chan struct{}
 	}
 
 	tcpServerHandshake struct {
@@ -35,15 +36,22 @@ type (
 )
 
 func (tcp) newClientHandshake() handshake {
-	return &tcpClientHandshake{make(chan tcpSynAck, 1)}
+	return &tcpClientHandshake{
+		synack: make(chan tcpSynAck, 1),
+		rstack: make(chan struct{}, 1),
+	}
 }
 
 func (t *tcpClientHandshake) recv(segment gopacket.TransportLayer) {
-	tcpSegment := segment.(*gplayers.TCP)
-	switch {
+	switch tcpSegment := segment.(*gplayers.TCP); {
 	case tcpSegment.SYN && tcpSegment.ACK:
 		select {
 		case t.synack <- tcpSynAck{seq: tcpSegment.Seq, ack: tcpSegment.Ack}:
+		default:
+		}
+	case tcpSegment.RST && tcpSegment.ACK:
+		select {
+		case t.rstack <- struct{}{}:
 		default:
 		}
 	}
@@ -73,6 +81,8 @@ func (t *tcpClientHandshake) do(ctx context.Context, c conn) error {
 			}
 			seq++
 			ack = synack.seq + 1
+		case <-t.rstack:
+			return ErrConnReset
 		}
 
 		return nil
