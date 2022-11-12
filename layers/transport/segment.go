@@ -9,6 +9,10 @@ import (
 	gplayers "github.com/google/gopacket/layers"
 )
 
+func (tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+	return DeserializeTCPSegment(datagram)
+}
+
 func DeserializeTCPSegment(datagram *gplayers.IPv4) (*gplayers.TCP, error) {
 	pkt := gopacket.NewPacket(datagram.Payload, gplayers.LayerTypeTCP, gopacket.Lazy)
 	segment := pkt.TransportLayer().(*gplayers.TCP)
@@ -19,6 +23,10 @@ func DeserializeTCPSegment(datagram *gplayers.IPv4) (*gplayers.TCP, error) {
 		return nil, err
 	}
 	return segment, nil
+}
+
+func (udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+	return DeserializeUDPSegment(datagram)
 }
 
 func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {

@@ -19,7 +19,7 @@ import (
 )
 
 func TestTCPConn(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	var wg sync.WaitGroup
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
@@ -78,4 +78,31 @@ func TestTCPConn(t *testing.T) {
 	b, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("working"), b)
+}
+
+func TestTCPConnReset(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	var networkLayer network.Layer
+	var transportLayer transport.Layer
+
+	defer func() {
+		cancel()
+		assert.NoError(t, transportLayer.Close())
+		assert.NoError(t, networkLayer.Close())
+		test.CloseIntfsAndFlagErrorForUnexpectedData(t, networkLayer.Interfaces()...)
+	}()
+
+	// start network
+	networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
+		DefaultRouteInterface: "lo",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, networkLayer)
+	transportLayer = transport.NewLayer(networkLayer)
+
+	// dial
+	c, err := transportLayer.Dial(ctx, transport.TCP, "127.0.0.1:80")
+	assert.Nil(t, c)
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "connection reset")
 }

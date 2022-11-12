@@ -19,11 +19,3 @@ type (
 	tcp struct{}
 	udp struct{}
 )
-
-func (tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
-	return DeserializeTCPSegment(datagram)
-}
-
-func (udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
-	return DeserializeUDPSegment(datagram)
-}

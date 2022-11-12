@@ -4,6 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/google/gopacket"
+)
+
+type (
+	ListenerNotFoundError struct {
+		Segment gopacket.TransportLayer
+		Addr    string
+	}
 )
 
 const (
@@ -17,7 +26,12 @@ var (
 	ErrProtocolClosed       = errors.New("protocol closed")
 	ErrListenerClosed       = fmt.Errorf("listener closed (os error msg: %s)", useOfClosedConn)
 	ErrDeadlineExceeded     = errors.New("deadline exceeded")
+	ErrConnReset            = errors.New("connection reset")
 )
+
+func (l *ListenerNotFoundError) Error() string {
+	return fmt.Sprintf("listener not found for dst address: %s", l.Addr)
+}
 
 // IsUseOfClosedConn tells whether the error is due to the port/connection
 // being closed.
