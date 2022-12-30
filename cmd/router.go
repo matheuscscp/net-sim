@@ -18,8 +18,12 @@ var routerCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// read config
 		var conf struct {
-			Interfaces []network.InterfaceConfig `yaml:"interfaces"`
+			MetricLabels struct {
+				StackName string `yaml:"stackName"`
+			} `yaml:"metricLabels"`
+
 			Routes     []network.RouteConfig     `yaml:"routes"`
+			Interfaces []network.InterfaceConfig `yaml:"interfaces"`
 		}
 		if err := config.ReadYAMLFileAndUnmarshal(args[0], &conf); err != nil {
 			return fmt.Errorf("error reading yaml router config file: %w", err)
@@ -32,6 +36,7 @@ var routerCmd = &cobra.Command{
 		// create network layer
 		networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
 			ForwardingMode: true,
+			MetricLabels:   conf.MetricLabels,
 			Interfaces:     conf.Interfaces,
 		})
 		if err != nil {

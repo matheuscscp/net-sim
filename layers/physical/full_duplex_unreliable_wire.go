@@ -122,8 +122,12 @@ func NewFullDuplexUnreliableWire(
 		return nil, fmt.Errorf("error dialing udp: %w", err)
 	}
 	wireCtx, cancel := context.WithCancel(context.Background())
+	stackName := conf.MetricLabels.StackName
+	if stackName == "" {
+		stackName = "default"
+	}
 	metricLabels := prometheus.Labels{
-		observability.StackName:  conf.MetricLabels.StackName,
+		observability.StackName:  stackName,
 		labelNameRecvUDPEndpoint: conf.RecvUDPEndpoint,
 		labelNameSendUDPEndpoint: conf.SendUDPEndpoint,
 	}

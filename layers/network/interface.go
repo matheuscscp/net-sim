@@ -62,6 +62,9 @@ type (
 		IPAddress      string `yaml:"ipAddress"`
 		Gateway        string `yaml:"gateway"`
 		NetworkCIDR    string `yaml:"networkCIDR"`
+		MetricLabels   struct {
+			StackName string `yaml:"stackName"`
+		} `yaml:"metricLabels"`
 
 		Card link.EthernetPortConfig `yaml:"ethernetPort"`
 	}
@@ -110,6 +113,9 @@ func NewInterface(ctx context.Context, conf InterfaceConfig) (Interface, error) 
 	}
 	if !network.Contains(gateway) {
 		return nil, errors.New("the gateway ip address does not match the network cidr")
+	}
+	if conf.Card.MetricLabels.StackName == "" {
+		conf.Card.MetricLabels.StackName = conf.MetricLabels.StackName
 	}
 	card, err := link.NewEthernetPort(ctx, conf.Card)
 	if err != nil {
