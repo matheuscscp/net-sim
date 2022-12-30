@@ -16,4 +16,6 @@ const (
 	MTU = 500
 
 	channelSize = 1024
+
+	promNamespace = "physical_layer"
 )

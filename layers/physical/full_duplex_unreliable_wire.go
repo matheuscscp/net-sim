@@ -9,11 +9,14 @@ import (
 	"time"
 
 	"github.com/matheuscscp/net-sim/layers/common"
+	"github.com/matheuscscp/net-sim/observability"
 	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/sirupsen/logrus"
 )
 
@@ -33,6 +36,9 @@ type (
 		RecvUDPEndpoint string         `yaml:"recvUDPEndpoint"`
 		SendUDPEndpoint string         `yaml:"sendUDPEndpoint"`
 		Capture         *CaptureConfig `yaml:"capture"`
+		MetricLabels    struct {
+			StackName string `yaml:"stackName"`
+		} `yaml:"metricLabels"`
 	}
 
 	// CaptureConfig allows specifying configurations for capturing
@@ -42,13 +48,62 @@ type (
 	}
 
 	fullDuplexUnreliableWire struct {
-		ctx       context.Context
-		cancelCtx context.CancelFunc
-		conf      *FullDuplexUnreliableWireConfig
-		conn      net.Conn
-		wg        sync.WaitGroup
-		captureCh chan []byte
+		ctx            context.Context
+		cancelCtx      context.CancelFunc
+		conf           *FullDuplexUnreliableWireConfig
+		conn           net.Conn
+		wg             sync.WaitGroup
+		captureCh      chan []byte
+		recvdBytes     prometheus.Counter
+		sentBytes      prometheus.Counter
+		recvLatencyNs  prometheus.Observer
+		sendLatencyNs  prometheus.Observer
+		activeCaptures prometheus.Gauge
 	}
+)
+
+const (
+	promSubsystemFDUW        = "full_duplex_unreliable_wire"
+	labelNameRecvUDPEndpoint = "recv_udp_endpoint"
+	labelNameSendUDPEndpoint = "send_udp_endpoint"
+)
+
+var (
+	metricLabelsFDUW = []string{
+		observability.StackName,
+		labelNameRecvUDPEndpoint,
+		labelNameSendUDPEndpoint,
+	}
+	recvdBytes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystemFDUW,
+		Name:      "recvd_bytes",
+		Help:      "Total number of received bytes.",
+	}, metricLabelsFDUW)
+	sentBytes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystemFDUW,
+		Name:      "sent_bytes",
+		Help:      "Total number of sent bytes.",
+	}, metricLabelsFDUW)
+	recvLatencyNs = promauto.NewSummaryVec(prometheus.SummaryOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystemFDUW,
+		Name:      "recv_latency_ns",
+		Help:      "Latency in nanoseconds of FullDuplexUnreliableWire.Recv().",
+	}, metricLabelsFDUW)
+	sendLatencyNs = promauto.NewSummaryVec(prometheus.SummaryOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystemFDUW,
+		Name:      "send_latency_ns",
+		Help:      "Latency in nanoseconds of FullDuplexUnreliableWire.Send().",
+	}, metricLabelsFDUW)
+	activeCaptures = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystemFDUW,
+		Name:      "active_captures",
+		Help:      "Number of go routines currently blocked on producing a wire capture into the capture channel.",
+	}, metricLabelsFDUW)
 )
 
 // NewFullDuplexUnreliableWire creates a FullDuplexUnreliableWire from config.
@@ -67,11 +122,21 @@ func NewFullDuplexUnreliableWire(
 		return nil, fmt.Errorf("error dialing udp: %w", err)
 	}
 	wireCtx, cancel := context.WithCancel(context.Background())
+	metricLabels := prometheus.Labels{
+		observability.StackName:  conf.MetricLabels.StackName,
+		labelNameRecvUDPEndpoint: conf.RecvUDPEndpoint,
+		labelNameSendUDPEndpoint: conf.SendUDPEndpoint,
+	}
 	f := &fullDuplexUnreliableWire{
-		ctx:       wireCtx,
-		cancelCtx: cancel,
-		conf:      &conf,
-		conn:      conn,
+		ctx:            wireCtx,
+		cancelCtx:      cancel,
+		conf:           &conf,
+		conn:           conn,
+		recvdBytes:     recvdBytes.With(metricLabels),
+		sentBytes:      sentBytes.With(metricLabels),
+		recvLatencyNs:  recvLatencyNs.With(metricLabels),
+		sendLatencyNs:  sendLatencyNs.With(metricLabels),
+		activeCaptures: activeCaptures.With(metricLabels),
 	}
 
 	if conf.Capture != nil {
@@ -102,19 +167,25 @@ func NewFullDuplexUnreliableWire(
 				WithField("recv_udp_endpoint", conf.RecvUDPEndpoint).
 				WithField("send_udp_endpoint", conf.SendUDPEndpoint)
 
-			for b := range f.captureCh {
-				err := captureWriter.WritePacket(gopacket.CaptureInfo{
-					Timestamp:     time.Now(),
-					CaptureLength: len(b),
-					Length:        len(b),
-				}, b)
-				if err != nil {
-					l.
-						WithError(err).
-						Error("error capturing data")
-					continue
+			ctxDone := wireCtx.Done()
+			for {
+				select {
+				case <-ctxDone:
+					return
+				case b := <-f.captureCh:
+					err := captureWriter.WritePacket(gopacket.CaptureInfo{
+						Timestamp:     time.Now(),
+						CaptureLength: len(b),
+						Length:        len(b),
+					}, b)
+					if err != nil {
+						l.
+							WithError(err).
+							Error("error capturing data")
+						continue
+					}
+					captureWriter.Flush()
 				}
-				captureWriter.Flush()
 			}
 		}()
 	}
@@ -142,9 +213,12 @@ func (f *fullDuplexUnreliableWire) Send(ctx context.Context, payload []byte) (n 
 	ch := make(chan struct{})
 	go func() {
 		defer close(ch)
+		t0 := time.Now()
 		n, err = c.Write(payload)
+		f.sendLatencyNs.Observe(float64(time.Since(t0).Nanoseconds()))
 		if err == nil {
 			f.capture(payload[:n])
+			f.sentBytes.Add(float64(n))
 		}
 	}()
 
@@ -175,9 +249,12 @@ func (f *fullDuplexUnreliableWire) Recv(ctx context.Context, payload []byte) (n 
 	ch := make(chan struct{})
 	go func() {
 		defer close(ch)
+		t0 := time.Now()
 		n, err = c.Read(payload)
+		f.recvLatencyNs.Observe(float64(time.Since(t0).Nanoseconds()))
 		if err == nil {
 			f.capture(payload[:n])
+			f.recvdBytes.Add(float64(n))
 		}
 	}()
 
@@ -205,17 +282,23 @@ func (f *fullDuplexUnreliableWire) Close() error {
 	}
 	cancel()
 
-	// close capture channel and wait thread
-	if f.captureCh != nil {
-		close(f.captureCh)
-	}
+	// wait threads
 	f.wg.Wait()
 
 	return f.conn.Close()
 }
 
 func (f *fullDuplexUnreliableWire) capture(b []byte) {
-	if f.captureCh != nil {
-		f.captureCh <- b
+	if f.captureCh == nil {
+		return
 	}
+
+	go func() {
+		f.activeCaptures.Inc()
+		defer f.activeCaptures.Dec()
+		select {
+		case f.captureCh <- b:
+		case <-f.ctx.Done():
+		}
+	}()
 }
