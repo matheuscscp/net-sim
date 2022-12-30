@@ -21,7 +21,7 @@ var switchCmd = &cobra.Command{
 		}
 
 		// start switch with cancel on interruption signals
-		ctx, cancel := contextWithCancelOnInterrupt()
+		ctx, cancel := newProcessContext()
 		defer cancel()
 		waitClose, err := link.RunSwitch(ctx, conf)
 		if err != nil {

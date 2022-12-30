@@ -26,7 +26,7 @@ var routerCmd = &cobra.Command{
 		}
 
 		// create ctx
-		ctx, cancel := contextWithCancelOnInterrupt()
+		ctx, cancel := newProcessContext()
 		defer cancel()
 
 		// create network layer

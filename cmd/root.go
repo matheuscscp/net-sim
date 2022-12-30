@@ -2,20 +2,25 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 var (
-	logLevel  string
-	logFormat string
-	rootCmd   = &cobra.Command{
+	logLevel    string
+	logFormat   string
+	metricsAddr string
+	rootCmd     = &cobra.Command{
 		Use:   "net-sim",
 		Short: "net-sim is a networking simulator for learning purposes",
 		PersistentPreRunE: func(*cobra.Command, []string) error {
@@ -26,12 +31,10 @@ var (
 )
 
 func init() {
-	rootCmd.
-		PersistentFlags().
-		StringVarP(&logLevel, "log-level", "v", "", "log level in logrus.Level format")
-	rootCmd.
-		PersistentFlags().
-		StringVarP(&logFormat, "log-format", "f", "text", `"text" or "json"`)
+	persistentFlags := rootCmd.PersistentFlags()
+	persistentFlags.StringVar(&logLevel, "log-level", "", "log level in logrus.Level format")
+	persistentFlags.StringVar(&logFormat, "log-format", "text", `"text" or "json"`)
+	persistentFlags.StringVar(&metricsAddr, "metrics-addr", "", "address for /metrics HTTP endpoint")
 }
 
 func setupLogger() error {
@@ -75,11 +78,23 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-func contextWithCancelOnInterrupt() (context.Context, context.CancelFunc) {
+func newProcessContext() (context.Context, context.CancelFunc) {
+	wg := &sync.WaitGroup{}
+	ctx, cancel := contextWithCancelOnInterrupt(wg)
+	setupMetrics(ctx, wg)
+	return ctx, func() {
+		cancel()
+		wg.Wait()
+	}
+}
+
+func contextWithCancelOnInterrupt(wg *sync.WaitGroup) (context.Context, context.CancelFunc) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	ctx, cancel := context.WithCancel(context.Background())
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer cancel()
 		defer signal.Stop(sigs)
 		select {
@@ -88,4 +103,33 @@ func contextWithCancelOnInterrupt() (context.Context, context.CancelFunc) {
 		}
 	}()
 	return ctx, cancel
+}
+
+func setupMetrics(ctx context.Context, wg *sync.WaitGroup) {
+	s := &http.Server{Handler: promhttp.Handler(), Addr: metricsAddr}
+
+	// listen and serve metrics endpoint on a separate go routine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logrus.
+				WithError(err).
+				Error("error listening and serving metrics")
+		}
+	}()
+
+	// block on <-ctx.Done() and shutdown metrics server on a separate go routine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-ctx.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.Shutdown(ctx); err != nil {
+			logrus.
+				WithError(err).
+				Error("error shutting down metrics server")
+		}
+	}()
 }
