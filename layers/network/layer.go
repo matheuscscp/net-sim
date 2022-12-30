@@ -69,7 +69,11 @@ type (
 	// concrete implementation of Layer.
 	LayerConfig struct {
 		// ForwardingMode keeps inbound datagrams with wrong dst IP address.
-		ForwardingMode        bool              `yaml:"forwardingMode"`
+		ForwardingMode bool `yaml:"forwardingMode"`
+		MetricLabels   struct {
+			StackName string `yaml:"stackName"`
+		} `yaml:"metricLabels"`
+
 		Interfaces            []InterfaceConfig `yaml:"interfaces"`
 		DefaultRouteInterface string            `yaml:"defaultRouteInterface"`
 	}
@@ -124,6 +128,9 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 	for i, intfConf := range conf.Interfaces {
 		intfConf.ForwardingMode = conf.ForwardingMode
 		intfConf.Card.ForwardingMode = false
+		if intfConf.MetricLabels.StackName == "" {
+			intfConf.MetricLabels.StackName = conf.MetricLabels.StackName
+		}
 		intf, err := NewInterface(ctx, intfConf)
 		if err != nil || overlapIntf(intf) != nil {
 			for j := i - 1; 0 <= j; j-- {

@@ -14,6 +14,10 @@ import (
 type (
 	// SwitchConfig contains the configs for RunSwitch().
 	SwitchConfig struct {
+		MetricLabels struct {
+			StackName string `yaml:"stackName"`
+		} `yaml:"metricLabels"`
+
 		Ports []EthernetPortConfig `yaml:"ethernetPorts"`
 	}
 
@@ -46,6 +50,9 @@ func RunSwitch(ctx context.Context, conf SwitchConfig) (SwitchWaitCloseFunc, err
 	ports := make([]EthernetPort, 0, len(conf.Ports))
 	for i, portConf := range conf.Ports {
 		portConf.ForwardingMode = true
+		if portConf.MetricLabels.StackName == "" {
+			portConf.MetricLabels.StackName = conf.MetricLabels.StackName
+		}
 		port, err := NewEthernetPort(ctx, portConf)
 		if err != nil {
 			for j := i - 1; 0 <= j; j-- {

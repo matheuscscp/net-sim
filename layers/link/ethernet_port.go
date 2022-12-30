@@ -42,6 +42,9 @@ type (
 		// ForwardingMode keeps inbound frames with wrong dst MAC address.
 		ForwardingMode bool   `yaml:"forwardingMode"`
 		MACAddress     string `yaml:"macAddress"`
+		MetricLabels   struct {
+			StackName string `yaml:"stackName"`
+		} `yaml:"metricLabels"`
 
 		Medium physical.FullDuplexUnreliableWireConfig `yaml:"fullDuplexUnreliableWire"`
 	}
@@ -69,6 +72,9 @@ func NewEthernetPort(ctx context.Context, conf EthernetPortConfig) (EthernetPort
 	macAddress, err := net.ParseMAC(conf.MACAddress)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing mac address: %w", err)
+	}
+	if conf.Medium.MetricLabels.StackName == "" {
+		conf.Medium.MetricLabels.StackName = conf.MetricLabels.StackName
 	}
 	medium, err := physical.NewFullDuplexUnreliableWire(ctx, conf.Medium)
 	if err != nil {
