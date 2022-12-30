@@ -56,7 +56,7 @@ func init() {
 
 func tcpProxy(args []string) error {
 	hostTransport := hostnetwork.NewTransportLayer()
-	ctx, cancel := contextWithCancelOnInterrupt(context.Background())
+	ctx, cancel := contextWithCancelOnInterrupt()
 	defer cancel()
 
 	// create overlay network and transport from config

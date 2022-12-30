@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/matheuscscp/net-sim/config"
@@ -27,7 +26,7 @@ var routerCmd = &cobra.Command{
 		}
 
 		// create ctx
-		ctx, cancel := contextWithCancelOnInterrupt(context.Background())
+		ctx, cancel := contextWithCancelOnInterrupt()
 		defer cancel()
 
 		// create network layer
