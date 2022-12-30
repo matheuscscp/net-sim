@@ -53,7 +53,7 @@ func init() {
 func httpProxy(args []string) error {
 	hostTransport := hostnetwork.NewTransportLayer()
 	hostRoundTripper := http.DefaultTransport
-	ctx, cancel := contextWithCancelOnInterrupt(context.Background())
+	ctx, cancel := contextWithCancelOnInterrupt()
 	defer cancel()
 
 	// create overlay network, transport and round tripper from config

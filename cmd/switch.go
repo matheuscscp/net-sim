@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/matheuscscp/net-sim/config"
@@ -22,7 +21,7 @@ var switchCmd = &cobra.Command{
 		}
 
 		// start switch with cancel on interruption signals
-		ctx, cancel := contextWithCancelOnInterrupt(context.Background())
+		ctx, cancel := contextWithCancelOnInterrupt()
 		defer cancel()
 		waitClose, err := link.RunSwitch(ctx, conf)
 		if err != nil {

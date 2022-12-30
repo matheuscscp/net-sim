@@ -75,15 +75,17 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-func contextWithCancelOnInterrupt(ctx context.Context) (context.Context, context.CancelFunc) {
+func contextWithCancelOnInterrupt() (context.Context, context.CancelFunc) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		defer cancel()
-		<-sigs
-		signal.Stop(sigs)
-		close(sigs)
+		defer signal.Stop(sigs)
+		select {
+		case <-sigs:
+		case <-ctx.Done():
+		}
 	}()
 	return ctx, cancel
 }
