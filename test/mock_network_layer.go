@@ -79,6 +79,10 @@ func (m *mockNetworkLayer) Close() error {
 	return nil
 }
 
+func (m *mockNetworkLayer) StackName() string {
+	return "test"
+}
+
 func (m *mockNetworkInterface) Send(ctx context.Context, datagram *gplayers.IPv4) error {
 	return nil
 }

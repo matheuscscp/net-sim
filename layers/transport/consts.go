@@ -36,4 +36,6 @@ const (
 
 	tcpRetransmissionTimeout = 200 * time.Millisecond
 	tcpMaxReadCacheItems     = (TCPWindowSize + TCPMTU - 1) / TCPMTU
+
+	promNamespace = "transport_layer"
 )

@@ -63,6 +63,7 @@ type (
 		// sequentially.
 		Listen(ctx context.Context, listener func(datagram *gplayers.IPv4))
 		Close() error
+		StackName() string
 	}
 
 	// LayerConfig contains the configs for the
@@ -287,6 +288,14 @@ func (l *layer) Close() error {
 		closers[i] = intf
 	}
 	return pkgio.Close(closers...)
+}
+
+func (l *layer) StackName() string {
+	stackName := l.conf.MetricLabels.StackName
+	if stackName == "" {
+		stackName = "default"
+	}
+	return stackName
 }
 
 func newLoopbackIntf() Interface {
