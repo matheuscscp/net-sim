@@ -1,6 +1,6 @@
 # start command: ./net-sim http-proxy config/http-reverse-proxy.yml \
-#   host::8080 google.com 1.1.1.2:1001 \
-#   host::8080 matheuspimenta.com 1.1.1.2:1002
+#   host::8080 google.com 1.1.1.2 \
+#   host::8080 matheuspimenta.com 1.1.1.2
 
 defaultRouteInterface: eth0
 interfaces:

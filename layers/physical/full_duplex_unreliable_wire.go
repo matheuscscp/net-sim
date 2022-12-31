@@ -2,10 +2,12 @@ package physical
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/matheuscscp/net-sim/layers/common"
@@ -259,6 +261,8 @@ func (f *fullDuplexUnreliableWire) Recv(ctx context.Context, payload []byte) (n 
 		if err == nil {
 			f.capture(payload[:n])
 			f.recvdBytes.Add(float64(n))
+		} else if errors.Is(err, syscall.ECONNREFUSED) {
+			n, err = 0, nil
 		}
 	}()
 
