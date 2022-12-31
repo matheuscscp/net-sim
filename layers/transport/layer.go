@@ -112,15 +112,18 @@ func NewLayer(networkLayer network.Layer) Layer {
 						if err = l.tcp.decapAndDemux(datagram); err != nil {
 							var notFoundErr *ListenerNotFoundError
 							if errors.As(err, &notFoundErr) {
+								originalSegment := notFoundErr.Segment.(*gplayers.TCP)
+								if originalSegment.FIN {
+									continue // TODO(pimenta, #71): acknowledge FIN segments properly
+								}
 								datagramHeader := &gplayers.IPv4{
 									DstIP:    datagram.SrcIP,
 									SrcIP:    datagram.DstIP,
 									Protocol: gplayers.IPProtocolTCP,
 								}
-								origin := notFoundErr.Segment.(*gplayers.TCP)
 								segment := &gplayers.TCP{
-									DstPort: origin.SrcPort,
-									SrcPort: origin.DstPort,
+									DstPort: originalSegment.SrcPort,
+									SrcPort: originalSegment.DstPort,
 									RST:     true,
 									ACK:     true,
 								}
