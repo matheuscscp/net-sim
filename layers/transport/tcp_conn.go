@@ -8,12 +8,15 @@ import (
 	"time"
 
 	"github.com/matheuscscp/net-sim/layers/common"
+	"github.com/matheuscscp/net-sim/observability"
 	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
 	"github.com/hashicorp/go-multierror"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 type (
@@ -36,11 +39,38 @@ type (
 		writeMu       sync.Mutex
 		writeCh       chan uint32 // a stream of ack numbers
 		writeDeadline *deadline
+
+		strayOrDelayedAckSegments prometheus.Counter
 	}
+)
+
+const (
+	promSubsystemTCPConn = "tcp_conn"
+	labelNameLocalAddr   = "local_addr"
+	labelNameRemoteAddr  = "remote_addr"
+)
+
+var (
+	metricLabelsTCPConn = []string{
+		observability.StackName,
+		labelNameLocalAddr,
+		labelNameRemoteAddr,
+	}
+	strayOrDelayedAckSegments = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystemTCPConn,
+		Name:      "stray_or_delayed_ack_segments",
+		Help:      "Total number of stray or delayed ACK segments.",
+	}, metricLabelsTCPConn)
 )
 
 func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 	ctx, cancel := context.WithCancel(context.Background())
+	metricLabels := prometheus.Labels{
+		observability.StackName: l.s.transportLayer.networkLayer.StackName(),
+		labelNameLocalAddr:      l.Addr().String(),
+		labelNameRemoteAddr:     remoteAddr.String(),
+	}
 	return &tcpConn{
 		ctx:        ctx,
 		cancelCtx:  cancel,
@@ -54,6 +84,8 @@ func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 
 		writeCh:       make(chan uint32, channelSize),
 		writeDeadline: newDeadline(),
+
+		strayOrDelayedAckSegments: strayOrDelayedAckSegments.With(metricLabels),
 	}
 }
 
@@ -294,8 +326,7 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 					delta += (int64(1) << 32)
 				}
 				if delta > 2*TCPWindowSize {
-					// TODO(pimenta, #69): add observability for dropped stray/delayed ack
-					// segment
+					t.strayOrDelayedAckSegments.Inc()
 					return nil
 				}
 				// process valid positive delta
