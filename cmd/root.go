@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -106,7 +107,14 @@ func contextWithCancelOnInterrupt(wg *sync.WaitGroup) (context.Context, context.
 }
 
 func setupMetrics(ctx context.Context, wg *sync.WaitGroup) {
-	s := &http.Server{Handler: promhttp.Handler(), Addr: metricsAddr}
+	s := &http.Server{
+		Addr: metricsAddr,
+		Handler: promhttp.InstrumentMetricHandler(
+			prometheus.DefaultRegisterer, promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+				EnableOpenMetrics: true,
+			}),
+		),
+	}
 
 	// listen and serve metrics endpoint on a separate go routine
 	wg.Add(1)
