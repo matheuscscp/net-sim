@@ -68,7 +68,7 @@ func (l *listener) Accept() (net.Conn, error) {
 	// a handshake should not block the goroutine calling Accept(),
 	// hence we call it on a new goroutine instead. the same is not
 	// true when Dial()ing
-	ctx, cancel := context.WithTimeout(l.acceptCtx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(l.acceptCtx, 5*time.Second)
 	c.setHandshakeContext(ctx)
 	go func() {
 		defer cancel()
