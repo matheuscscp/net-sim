@@ -110,9 +110,11 @@ func (e *ethernetPort) startThreads() {
 					WithField("frame", frame)
 				got, err := e.medium.Send(e.ctx, frame.buf)
 				if err != nil {
-					l.
-						WithError(err).
-						Error("error sending ethernet frame")
+					if !errors.Is(err, context.Canceled) {
+						l.
+							WithError(err).
+							Error("error sending ethernet frame")
+					}
 				} else if want := len(frame.buf); got < want {
 					l.
 						WithField("want", want).
@@ -139,7 +141,9 @@ func (e *ethernetPort) startThreads() {
 					Error("error receiving ethernet frame")
 				continue
 			}
-			e.decapAndRecv(buf[:n])
+			if n > 0 {
+				e.decapAndRecv(buf[:n])
+			}
 		}
 	}()
 }

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"sync"
 	"time"
 
@@ -80,20 +81,25 @@ func httpProxy(args []string) error {
 	if err != nil {
 		return err
 	}
-	srcToHostToDst := make(map[addr]map[string]addr)
+	srcToHostToProxy := make(map[addr]map[string]*httputil.ReverseProxy)
 	for _, entry := range httpProxyEntries {
-		hostToDst, ok := srcToHostToDst[entry.src]
+		hostToProxy, ok := srcToHostToProxy[entry.src]
 		if !ok {
-			hostToDst = make(map[string]addr)
-			srcToHostToDst[entry.src] = hostToDst
+			hostToProxy = make(map[string]*httputil.ReverseProxy)
+			srcToHostToProxy[entry.src] = hostToProxy
 		}
-		if _, ok := hostToDst[entry.host]; ok {
+		if _, ok := hostToProxy[entry.host]; ok {
 			return fmt.Errorf("(src-addr=%s, host-header=%s) pair is repeated", entry.src, entry.host)
 		}
-		hostToDst[entry.host] = entry.dst
+		proxy := httputil.NewSingleHostReverseProxy(&url.URL{
+			Scheme: "http",
+			Host:   entry.dst.hostPort().orLoopback().orPort(80).String(),
+		})
+		proxy.Transport = roundTripperMap[entry.dst.networkOrDefault()]
+		hostToProxy[entry.host] = proxy
 	}
 	srcToListener := make(map[addr]net.Listener)
-	for src := range srcToHostToDst {
+	for src := range srcToHostToProxy {
 		t := transportMap[src.networkOrDefault()]
 		l, err := t.Listen(ctx, transport.TCP, src.hostPort().orPort(80).String())
 		if err != nil {
@@ -109,16 +115,16 @@ func httpProxy(args []string) error {
 	srcToServer := make(map[addr]*http.Server)
 	var wg sync.WaitGroup
 	for src, lis := range srcToListener {
+		src := src
+		hostToProxy := srcToHostToProxy[src]
 		l := logrus.
 			WithField("src_addr", src)
-		hostToDst := srcToHostToDst[src]
 		s := &http.Server{
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				hostHeader := r.Header.Get("Host")
-				dst, ok := hostToDst[hostHeader]
+				proxy, ok := hostToProxy[r.Host]
 				if !ok {
 					w.WriteHeader(http.StatusNotFound)
-					resp := []byte(fmt.Sprintf("host '%s' not found", hostHeader))
+					resp := []byte(fmt.Sprintf("host '%s' not found for src addr '%s'", r.Host, src))
 					if _, err := w.Write(resp); err != nil {
 						l.
 							WithError(err).
@@ -126,10 +132,12 @@ func httpProxy(args []string) error {
 					}
 					return
 				}
-				url := *r.URL
-				url.Host = dst.hostPort().orLoopback().orPort(80).String()
-				proxy := httputil.NewSingleHostReverseProxy(&url)
-				proxy.Transport = roundTripperMap[dst.networkOrDefault()]
+
+				// FIXME(pimenta, #83): should be able to reuse connections.
+				// for some reason r.Context() is being canceled after line
+				// net/http/server.go:1993: w.cancelCtx()
+				w.Header().Set("Connection", "close")
+
 				proxy.ServeHTTP(w, r)
 			}),
 		}
