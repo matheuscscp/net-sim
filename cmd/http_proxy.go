@@ -132,12 +132,7 @@ func httpProxy(args []string) error {
 					}
 					return
 				}
-
-				// FIXME(pimenta, #83): should be able to reuse connections.
-				// for some reason r.Context() is being canceled after line
-				// net/http/server.go:1993: w.cancelCtx()
 				w.Header().Set("Connection", "close")
-
 				proxy.ServeHTTP(w, r)
 			}),
 		}
