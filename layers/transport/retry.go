@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -32,7 +33,7 @@ func retryWithBackoff(ctx context.Context, do func(context.Context) error) error
 
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return fmt.Errorf("retryWithBackoff(ctx) done while running do(): %w", ctx.Err())
 			case <-ch:
 				return err
 			case <-timer.C:

@@ -74,7 +74,7 @@ func (t *tcpClientHandshake) do(ctx context.Context, c conn) error {
 		// receive SYNACK segment
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("(*tcpClientHandshake).do(ctx) done while waiting for tcp synack segment: %w", ctx.Err())
 		case synack := <-t.synack:
 			if synack.ack != seq+1 {
 				return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, synack.ack)
@@ -132,7 +132,7 @@ func (t *tcpServerHandshake) do(ctx context.Context, c conn) error {
 	var ack uint32
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("(*tcpServerHandshake).do(ctx) done while waiting for tcp syn segment: %w", ctx.Err())
 	case seq := <-t.syn:
 		ack = seq + 1
 	}
@@ -152,7 +152,7 @@ func (t *tcpServerHandshake) do(ctx context.Context, c conn) error {
 		// receive ACK segment
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("(*tcpServerHandshake).do(ctx) done while waiting for tcp ack segment: %w", ctx.Err())
 		case ack := <-t.ack:
 			if ack != seq+1 {
 				return fmt.Errorf("peer sent wrong ack number on handshake. want %d, got %d", seq+1, ack)
