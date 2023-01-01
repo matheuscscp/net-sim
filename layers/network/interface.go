@@ -195,7 +195,8 @@ func (i *interfaceImpl) send(
 	if len(datagramBuf)-HeaderLength > MTU {
 		return errPayloadTooLarge
 	}
-	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, i.ctx)
+	var iCtxDone bool
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, i.ctx, &iCtxDone)
 	defer cancel()
 
 	// calculate ARP target IP address
@@ -208,10 +209,8 @@ func (i *interfaceImpl) send(
 	// find ARP target MAC address
 	dstMACAddress := link.BroadcastMACEndpoint()
 	if arpDstIPAddress != i.broadcast {
-		var hasL2Endpoint bool
-		refresh := func() { dstMACAddress, hasL2Endpoint = i.arpTable.FindRoute(arpDstIPAddress) }
-		refresh()
-		if !hasL2Endpoint {
+		hasL2Endpoint := func() (ok bool) { dstMACAddress, ok = i.arpTable.FindRoute(arpDstIPAddress); return }
+		if !hasL2Endpoint() {
 			// send arp request
 			err := i.sendARP(ctx, &gplayers.ARP{
 				Operation:      gplayers.ARPRequest,
@@ -224,15 +223,16 @@ func (i *interfaceImpl) send(
 
 			// wait for arp reply
 			i.arpEventsMu.Lock()
-			refresh()
-			for ctx.Err() == nil && !hasL2Endpoint {
+			for ctx.Err() == nil && !hasL2Endpoint() {
 				i.arpEvents.Wait()
-				refresh()
 			}
 			i.arpEventsMu.Unlock()
 
-			if !hasL2Endpoint {
-				return ctx.Err()
+			if ctx.Err() != nil {
+				if iCtxDone {
+					return fmt.Errorf("(*interfaceImpl).ctx done while waiting for arp reply: %w", ctx.Err())
+				}
+				return fmt.Errorf("(*interfaceImpl).send(ctx) done while waiting for arp reply: %w", ctx.Err())
 			}
 		}
 	}
@@ -246,7 +246,13 @@ func (i *interfaceImpl) send(
 		EthernetType: gplayers.EthernetTypeIPv4,
 	})
 	if err != nil {
-		return fmt.Errorf("error sending ip datagram: %w", err)
+		if pkgcontext.IsContextError(ctx, err) {
+			if iCtxDone {
+				return fmt.Errorf("(*interfaceImpl).ctx done while sending ethernet frame with ip datagram bytes: %w", err)
+			}
+			return fmt.Errorf("(*interfaceImpl).send(ctx) done while sending ethernet frame with ip datagram bytes: %w", err)
+		}
+		return fmt.Errorf("error sending ethernet frame with ip datagram bytes: %w", err)
 	}
 
 	return nil

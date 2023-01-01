@@ -97,23 +97,36 @@ func (t *tcpConn) setHandshakeContext(ctx context.Context) {
 // has been set with setHandshakeContext().
 func (t *tcpConn) handshake() error {
 	if handshake := t.h; handshake != nil {
-		defer func() { t.h = nil }()
-
-		ctx, cancel := pkgcontext.WithCancelOnAnotherContext(t.hCtx, t.ctx)
+		var tCtxDone bool
+		ctx, cancel := pkgcontext.WithCancelOnAnotherContext(t.hCtx, t.ctx, &tCtxDone)
 		defer cancel()
 		if err := handshake.do(ctx, t); err != nil {
+			if pkgcontext.IsContextError(ctx, err) {
+				if tCtxDone {
+					return fmt.Errorf("(*tcpConn).ctx done while doing handshake: %w", err)
+				}
+				return fmt.Errorf("(*tcpConn).hCtx done while doing handshake: %w", err)
+			}
 			return err
 		}
+		t.h = nil
 	}
 	return nil
 }
 
 func (t *tcpConn) waitHandshake() error {
+	if t.h == nil {
+		return nil
+	}
+
 	select {
 	case <-t.hCtx.Done():
-		return nil
+		if t.h == nil {
+			return nil
+		}
+		return fmt.Errorf("(*tcpConn).hCtx done while waiting for handshake: %w", t.hCtx.Err())
 	case <-t.ctx.Done():
-		return t.ctx.Err()
+		return fmt.Errorf("(*tcpConn).ctx done while waiting for handshake: %w", t.ctx.Err())
 	}
 }
 
@@ -173,14 +186,15 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 	defer t.readMu.Unlock()
 
 	// create deadline context
-	ctx, cancel, deadlineExceeded := t.readDeadline.newContext(t.ctx)
+	var deadlineExceeded bool
+	ctx, cancel := t.readDeadline.withContext(t.ctx, &deadlineExceeded)
 	defer cancel()
 	ctxDone := ctx.Done()
-	if *deadlineExceeded {
+	if deadlineExceeded {
 		return 0, ErrDeadlineExceeded
 	}
 	if ctx.Err() != nil {
-		return 0, ctx.Err()
+		return 0, fmt.Errorf("(*tcpConn).ctx done before reading bytes: %w", ctx.Err())
 	}
 
 	// if some bytes are already available, return them right away
@@ -203,10 +217,10 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 			// wait for an event if cache does not contain t.ack
 			select {
 			case <-ctxDone:
-				if *deadlineExceeded {
+				if deadlineExceeded {
 					return 0, ErrDeadlineExceeded
 				}
-				return 0, ctx.Err()
+				return 0, fmt.Errorf("(*tcpConn).ctx done while waiting for tcp segment: %w", ctx.Err())
 			case segment := <-t.readCh:
 				if seq := segment.Seq; seq != t.ack {
 					// sequence number does not match the next expected byte (t.ack).
@@ -232,7 +246,7 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		ackSegment.ACK = true
 		ackSegment.Ack = t.ack
 		if err := t.l.s.transportLayer.send(ctx, ackDatagramHeader, ackSegment); err != nil {
-			if *deadlineExceeded {
+			if deadlineExceeded {
 				return 0, ErrDeadlineExceeded
 			}
 			return 0, fmt.Errorf("error sending tcp ack segment: %w", err)
@@ -262,14 +276,15 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 	defer t.writeMu.Unlock()
 
 	// create deadline context
-	ctx, cancel, deadlineExceeded := t.writeDeadline.newContext(t.ctx)
+	var deadlineExceeded bool
+	ctx, cancel := t.writeDeadline.withContext(t.ctx, &deadlineExceeded)
 	defer cancel()
 	ctxDone := ctx.Done()
-	if *deadlineExceeded {
+	if deadlineExceeded {
 		return 0, ErrDeadlineExceeded
 	}
 	if ctx.Err() != nil {
-		return 0, ctx.Err()
+		return 0, fmt.Errorf("(*tcpConn).ctx done before writing bytes: %w", ctx.Err())
 	}
 
 	// send loop
@@ -294,7 +309,7 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 			segment.Seq = t.seq + uint32(nextByte)
 			segment.Payload = b[nextByte:endOfPayload]
 			if err = t.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
-				if *deadlineExceeded {
+				if deadlineExceeded {
 					err = ErrDeadlineExceeded
 					return
 				}
@@ -311,10 +326,10 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 			defer timeout.Stop()
 			select {
 			case <-ctxDone:
-				if *deadlineExceeded {
+				if deadlineExceeded {
 					return ErrDeadlineExceeded
 				}
-				return ctx.Err()
+				return fmt.Errorf("(*tcpConn).ctx done while waiting for tcp segment: %w", ctx.Err())
 			case ack := <-t.writeCh:
 				// handle ack number
 				seq := int64(t.seq) + int64(ackedBytes)

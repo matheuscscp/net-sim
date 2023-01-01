@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	pkgio "github.com/matheuscscp/net-sim/pkg/io"
+
+	petname "github.com/dustinkirkland/golang-petname"
 	"github.com/google/gopacket"
 	"github.com/hashicorp/go-multierror"
-	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 	"github.com/sirupsen/logrus"
 )
 
@@ -64,6 +66,8 @@ func (l *listener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for pending connection: %w", err)
 	}
+	logger := l.connLogger(c)
+	logger.Debug("Accept(): conn created")
 
 	// a handshake should not block the goroutine calling Accept(),
 	// hence we call it on a new goroutine instead. the same is not
@@ -74,13 +78,11 @@ func (l *listener) Accept() (net.Conn, error) {
 		defer cancel()
 		if err := c.handshake(); err != nil {
 			c.Close()
-			a := l.Addr()
-			logrus.
+			logger.
 				WithError(err).
-				WithField("protocol", a.Network()).
-				WithField("local_addr", a.String()).
-				WithField("remote_addr", c.RemoteAddr().String()).
-				Error("error accepting protocol handshake")
+				Error("error doing server handshake. connection was closed")
+		} else {
+			logger.Debug("success doing server handshake")
 		}
 	}()
 
@@ -186,10 +188,12 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
-	c, err := l.findConnOrCreate(addr{port, *ipAddress})
+	c, err := l.createConn(addr{port, *ipAddress})
 	if err != nil {
 		return nil, err
 	}
+	logger := l.connLogger(c)
+	logger.Debug("Dial(): conn created")
 
 	// handshake
 	ctx, cancel := context.WithCancel(ctx)
@@ -197,12 +201,17 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	c.setHandshakeContext(ctx)
 	if err := c.handshake(); err != nil {
 		c.Close()
-		return nil, fmt.Errorf("error dialing protocol handshake: %w", err)
+		const msg = "error doing client handshake. connection was closed"
+		logger.
+			WithError(err).
+			Error(msg)
+		return nil, fmt.Errorf("%s: %w", msg, err)
 	}
+	logger.Debug("success doing client handshake")
 	return c, nil
 }
 
-func (l *listener) findConnOrCreate(remoteAddr addr) (conn, error) {
+func (l *listener) createConn(remoteAddr addr) (conn, error) {
 	l.connsMu.Lock()
 	defer l.connsMu.Unlock()
 
@@ -210,15 +219,16 @@ func (l *listener) findConnOrCreate(remoteAddr addr) (conn, error) {
 		return nil, ErrListenerClosed
 	}
 
-	c, ok := l.conns[remoteAddr]
-	if !ok {
-		c = l.s.protocolFactory.newConn(l, remoteAddr, l.s.protocolFactory.newClientHandshake())
-		l.conns[remoteAddr] = c
+	if _, ok := l.conns[remoteAddr]; ok {
+		return nil, fmt.Errorf("a connection to %s already exists", remoteAddr.String())
 	}
+
+	c := l.s.protocolFactory.newConn(l, remoteAddr, l.s.protocolFactory.newClientHandshake())
+	l.conns[remoteAddr] = c
 	return c, nil
 }
 
-func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
+func (l *listener) findConnOrCreatePending(remoteAddr addr, segment gopacket.TransportLayer) conn {
 	// check for an already existing conn (this is the most common case
 	// and therefore should be optimized by using an RWMutex)
 	l.connsMu.RLock()
@@ -233,12 +243,15 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr) conn {
 	}
 
 	// conn does not exist. acquire pendingConns lock
+	if !l.s.protocolFactory.shouldCreatePendingConn(segment) {
+		return nil
+	}
 	l.pendingConnsMu.Lock()
 	defer l.pendingConnsMu.Unlock()
 
 	// now we need to check for an already existing conn again,
 	// because between requesting and acquiring the pendingConns
-	// lock it's possible that accept() added our conn to l.conns
+	// lock it's possible that Accept() added our conn to l.conns
 	l.connsMu.RLock()
 	if l.conns == nil {
 		l.connsMu.RUnlock()
@@ -274,4 +287,13 @@ func (l *listener) deleteConn(remoteAddr addr) {
 		delete(l.conns, remoteAddr)
 	}
 	l.connsMu.Unlock()
+}
+
+func (l *listener) connLogger(c conn) logrus.FieldLogger {
+	a := l.Addr()
+	return logrus.
+		WithField("debug_conn_name", petname.Generate(2, "_")).
+		WithField("protocol", a.Network()).
+		WithField("local_addr", a.String()).
+		WithField("remote_addr", c.RemoteAddr().String())
 }

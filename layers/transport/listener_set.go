@@ -51,7 +51,7 @@ func (s *listenerSet) listen(ctx context.Context, address string) (*listener, er
 				break
 			}
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return nil, fmt.Errorf("(*listenerSet).listen(ctx) done while choosing free port: %w", ctx.Err())
 			}
 		}
 		if port == 0 {
@@ -99,6 +99,7 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) error {
 
 	// find listener
 	dstPort, dstIPAddress := portFromEndpoint(flow.Dst()), gplayers.NewIPEndpoint(datagram.DstIP)
+	localAddr := addr{dstPort, dstIPAddress}
 	s.listenersMu.RLock()
 	if s.listeners == nil {
 		s.listenersMu.RUnlock()
@@ -107,16 +108,23 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) error {
 	l, ok := s.listeners[dstPort]
 	s.listenersMu.RUnlock()
 	if !ok || !l.matchesDstIPAddress(dstIPAddress) {
-		return &ListenerNotFoundError{
-			Segment: segment,
-			Addr:    fmt.Sprintf("%s:%d", dstIPAddress, dstPort),
+		return &listenerNotFoundError{
+			segment: segment,
+			addr:    localAddr.String(),
 		}
 	}
 
 	// find conn and receive
 	srcPort, srcIPAddress := portFromEndpoint(flow.Src()), gplayers.NewIPEndpoint(datagram.SrcIP)
-	if c := l.findConnOrCreatePending(addr{srcPort, srcIPAddress}); c != nil {
+	remoteAddr := addr{srcPort, srcIPAddress}
+	if c := l.findConnOrCreatePending(remoteAddr, segment); c != nil {
 		c.recv(segment)
+	} else {
+		return &connNotFoundError{
+			segment:    segment,
+			localAddr:  localAddr.String(),
+			remoteAddr: remoteAddr.String(),
+		}
 	}
 
 	return nil

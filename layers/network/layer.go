@@ -198,7 +198,7 @@ func (l *layer) findInterfaceForDstIPAddress(dstIPAddress net.IP) (Interface, er
 	}
 	intf, ok := l.intfMap[intfName]
 	if !ok {
-		return nil, fmt.Errorf("the interface %s chosen by indexing the forwarding table with the dst IP address %s does not exist", intfName, dstIPAddress)
+		return nil, fmt.Errorf("the network interface %s, chosen by indexing the forwarding table with the dst IP address %s, does not exist", intfName, dstIPAddress)
 	}
 	return intf, nil
 }
@@ -222,7 +222,8 @@ func (l *layer) Interface(name string) Interface {
 }
 
 func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv4)) {
-	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, l.ctx)
+	var lCtxDone bool
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, l.ctx, &lCtxDone)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -258,6 +259,13 @@ func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv
 						err = dstIntf.Send(ctx, datagram)
 						if err == nil {
 							continue
+						}
+						if pkgcontext.IsContextError(ctx, err) {
+							if lCtxDone {
+								err = fmt.Errorf("(*layer).ctx done while forwarding ip datagram: %w", err)
+							} else {
+								err = fmt.Errorf("(*layer).Listen(ctx) done while forwarding ip datagram: %w", err)
+							}
 						}
 					}
 					if err != nil && !errors.Is(err, errNoL3Route) {
@@ -346,9 +354,9 @@ func (l *loopbackIntf) send(ctx context.Context, datagramBuf []byte) error {
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("(*loopbackIntf).send(ctx) done while pushing ip datagram to input buffer: %w", ctx.Err())
 	case <-l.ctx.Done():
-		return l.ctx.Err()
+		return fmt.Errorf("(*loopbackIntf).ctx done while pushing ip datagram to input buffer: %w", l.ctx.Err())
 	case l.buf <- datagram:
 	}
 	return nil

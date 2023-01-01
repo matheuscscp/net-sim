@@ -110,10 +110,11 @@ func NewLayer(networkLayer network.Layer) Layer {
 					switch datagram.Protocol {
 					case gplayers.IPProtocolTCP:
 						if err = l.tcp.decapAndDemux(datagram); err != nil {
-							var notFoundErr *ListenerNotFoundError
-							if errors.As(err, &notFoundErr) {
-								originalSegment := notFoundErr.Segment.(*gplayers.TCP)
-								if originalSegment.FIN {
+							// handle listener not found
+							var listenerNotFoundErr *listenerNotFoundError
+							if errors.As(err, &listenerNotFoundErr) {
+								unmatchedSegment, ok := listenerNotFoundErr.segment.(*gplayers.TCP)
+								if ok && unmatchedSegment.FIN {
 									continue // TODO(pimenta, #71): acknowledge FIN segments properly
 								}
 								datagramHeader := &gplayers.IPv4{
@@ -122,13 +123,28 @@ func NewLayer(networkLayer network.Layer) Layer {
 									Protocol: gplayers.IPProtocolTCP,
 								}
 								segment := &gplayers.TCP{
-									DstPort: originalSegment.SrcPort,
-									SrcPort: originalSegment.DstPort,
+									DstPort: unmatchedSegment.SrcPort,
+									SrcPort: unmatchedSegment.DstPort,
 									RST:     true,
 									ACK:     true,
 								}
 								if err = l.send(ctx, datagramHeader, segment); err != nil {
 									err = fmt.Errorf("error sending tcp rstack segment: %w", err)
+								}
+							}
+
+							// handle conn not found
+							var connNotFoundErr *connNotFoundError
+							if errors.As(err, &connNotFoundErr) {
+								unmatchedSegment, ok := connNotFoundErr.segment.(*gplayers.TCP)
+								if ok {
+									if unmatchedSegment.FIN {
+										continue // TODO(pimenta, #71): acknowledge FIN segments properly
+									}
+									err = nil
+									logrus.
+										WithField("segment", unmatchedSegment).
+										Debug("conn not found for tcp segment")
 								}
 							}
 						}
@@ -139,7 +155,7 @@ func NewLayer(networkLayer network.Layer) Layer {
 						logrus.
 							WithError(err).
 							WithField("datagram", datagram).
-							Error("error in decapAndDemux()")
+							Error("error in transport.(*layer).decapAndDemux()")
 					}
 				}
 			}

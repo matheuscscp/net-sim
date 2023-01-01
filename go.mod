@@ -3,6 +3,7 @@ module github.com/matheuscscp/net-sim
 go 1.19
 
 require (
+	github.com/dustinkirkland/golang-petname v0.0.0-20191129215211-8e5a1ed0cff0
 	github.com/google/gopacket v1.1.19
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/prometheus/client_golang v1.14.0

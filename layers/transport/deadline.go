@@ -48,16 +48,17 @@ func (d *deadline) set(t time.Time) {
 	}()
 }
 
-func (d *deadline) newContext(ctx context.Context) (context.Context, context.CancelFunc, *bool) {
-	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, d.ctx)
-	exceeded := new(bool)
+func (d *deadline) withContext(parent context.Context, exceeded *bool) (context.Context, context.CancelFunc) {
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(parent, d.ctx, nil /*otherDone*/)
 
 	d.mu.Lock()
 	if d.exceeded() {
 		d.mu.Unlock()
 		cancel()
-		*exceeded = true
-		return ctx, cancel, exceeded
+		if exceeded != nil {
+			*exceeded = true
+		}
+		return ctx, cancel
 	}
 	d.mu.Unlock()
 
@@ -75,7 +76,7 @@ func (d *deadline) newContext(ctx context.Context) (context.Context, context.Can
 		}
 		d.mu.Unlock()
 
-		if ctx.Err() == nil {
+		if ctx.Err() == nil && exceeded != nil {
 			*exceeded = true
 		}
 	}()
@@ -86,7 +87,7 @@ func (d *deadline) newContext(ctx context.Context) (context.Context, context.Can
 		d.cond.Broadcast()
 		d.mu.Unlock()
 		wg.Wait()
-	}, exceeded
+	}
 }
 
 func (d *deadline) exceeded() bool {

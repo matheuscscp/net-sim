@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/matheuscscp/net-sim/layers/common"
+	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 	pkgio "github.com/matheuscscp/net-sim/pkg/io"
 
 	"github.com/google/gopacket"
@@ -58,13 +59,14 @@ func (u *udpConn) recv(segment gopacket.TransportLayer) {
 // the whole UDP segment payload (any exceeding bytes will be discarded).
 func (u *udpConn) Read(b []byte) (n int, err error) {
 	// create deadline context
-	ctx, cancel, deadlineExceeded := u.readDeadline.newContext(u.ctx)
+	var deadlineExceeded bool
+	ctx, cancel := u.readDeadline.withContext(u.ctx, &deadlineExceeded)
 	defer cancel()
-	if *deadlineExceeded {
+	if deadlineExceeded {
 		return 0, ErrDeadlineExceeded
 	}
 	if ctx.Err() != nil {
-		return 0, ctx.Err()
+		return 0, fmt.Errorf("(*udpConn).ctx done before reading bytes: %w", ctx.Err())
 	}
 
 	// read
@@ -72,10 +74,10 @@ func (u *udpConn) Read(b []byte) (n int, err error) {
 	case payload := <-u.in:
 		return copy(b, payload), nil
 	case <-ctx.Done():
-		if *deadlineExceeded {
+		if deadlineExceeded {
 			return 0, ErrDeadlineExceeded
 		}
-		return 0, ctx.Err()
+		return 0, fmt.Errorf("(*udpConn).ctx done while waiting for udp segment: %w", ctx.Err())
 	}
 }
 
@@ -106,19 +108,23 @@ func (u *udpConn) Write(b []byte) (n int, err error) {
 	}
 
 	// create deadline context
-	ctx, cancel, deadlineExceeded := u.writeDeadline.newContext(u.ctx)
+	var deadlineExceeded bool
+	ctx, cancel := u.writeDeadline.withContext(u.ctx, &deadlineExceeded)
 	defer cancel()
-	if *deadlineExceeded {
+	if deadlineExceeded {
 		return 0, ErrDeadlineExceeded
 	}
 	if ctx.Err() != nil {
-		return 0, ctx.Err()
+		return 0, fmt.Errorf("(*udpConn).ctx done before writing bytes: %w", ctx.Err())
 	}
 
 	// write
 	if err := u.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
-		if *deadlineExceeded {
+		if deadlineExceeded {
 			return 0, ErrDeadlineExceeded
+		}
+		if pkgcontext.IsContextError(ctx, err) {
+			return 0, fmt.Errorf("(*udpConn).ctx done while sending udp segment: %w", err)
 		}
 		return 0, fmt.Errorf("error sending udp segment: %w", err)
 	}
