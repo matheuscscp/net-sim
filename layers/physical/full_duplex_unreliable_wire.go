@@ -12,7 +12,6 @@ import (
 
 	"github.com/matheuscscp/net-sim/layers/common"
 	"github.com/matheuscscp/net-sim/observability"
-	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -225,21 +224,28 @@ func (f *fullDuplexUnreliableWire) Send(ctx context.Context, payload []byte) (n 
 		if err == nil {
 			f.capture(payload[:n])
 			f.sentBytes.Add(float64(n))
+		} else {
+			err = fmt.Errorf("error writing bytes via udp: %w", err)
 		}
 	}()
 
 	// wait for ch or for ctx.Done() and cancel the operation
-	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, f.ctx)
-	defer cancel()
+	tPast := time.Now()
 	select {
-	case <-ctx.Done():
-		if err := c.SetWriteDeadline(time.Now()); err != nil { // force timeout for ongoing blocked write
-			return 0, fmt.Errorf("error forcing timeout after context done: %w", err)
-		}
-		<-ch
-		return 0, ctx.Err()
 	case <-ch:
 		return
+	case <-ctx.Done():
+		if err := c.SetWriteDeadline(tPast); err != nil { // force timeout for ongoing blocked write
+			return 0, fmt.Errorf("error forcing write timeout after (*fullDuplexUnreliableWire).Send(ctx) done: %w", err)
+		}
+		<-ch
+		return 0, fmt.Errorf("(*fullDuplexUnreliableWire).Send(ctx) done while sending bytes: %w", ctx.Err())
+	case <-f.ctx.Done():
+		if err := c.SetWriteDeadline(tPast); err != nil { // force timeout for ongoing blocked write
+			return 0, fmt.Errorf("error forcing write timeout after (*fullDuplexUnreliableWire).ctx done: %w", err)
+		}
+		<-ch
+		return 0, fmt.Errorf("(*fullDuplexUnreliableWire).ctx done while sending bytes: %w", f.ctx.Err())
 	}
 }
 
@@ -263,21 +269,28 @@ func (f *fullDuplexUnreliableWire) Recv(ctx context.Context, payload []byte) (n 
 			f.recvdBytes.Add(float64(n))
 		} else if errors.Is(err, syscall.ECONNREFUSED) {
 			n, err = 0, nil
+		} else {
+			err = fmt.Errorf("error reading bytes via udp: %w", err)
 		}
 	}()
 
 	// wait for ch or for ctx.Done() and cancel the operation
-	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, f.ctx)
-	defer cancel()
+	tPast := time.Now()
 	select {
-	case <-ctx.Done():
-		if err := c.SetReadDeadline(time.Now()); err != nil { // force timeout for ongoing blocked read
-			return 0, fmt.Errorf("error forcing timeout after context done: %w", err)
-		}
-		<-ch
-		return 0, ctx.Err()
 	case <-ch:
 		return
+	case <-ctx.Done():
+		if err := c.SetReadDeadline(tPast); err != nil { // force timeout for ongoing blocked read
+			return 0, fmt.Errorf("error forcing read timeout after (*fullDuplexUnreliableWire).Recv(ctx) done: %w", err)
+		}
+		<-ch
+		return 0, fmt.Errorf("(*fullDuplexUnreliableWire).Recv(ctx) done while receiving bytes: %w", ctx.Err())
+	case <-f.ctx.Done():
+		if err := c.SetReadDeadline(tPast); err != nil { // force timeout for ongoing blocked read
+			return 0, fmt.Errorf("error forcing read timeout after (*fullDuplexUnreliableWire).ctx done: %w", err)
+		}
+		<-ch
+		return 0, fmt.Errorf("(*fullDuplexUnreliableWire).ctx done while receiving bytes: %w", f.ctx.Err())
 	}
 }
 

@@ -22,7 +22,7 @@ type (
 
 	tcpClientHandshake struct {
 		synack chan tcpSynAck
-		rstack chan struct{}
+		ackrst chan struct{}
 	}
 
 	tcpServerHandshake struct {
@@ -38,7 +38,7 @@ type (
 func (tcp) newClientHandshake() handshake {
 	return &tcpClientHandshake{
 		synack: make(chan tcpSynAck, 1),
-		rstack: make(chan struct{}, 1),
+		ackrst: make(chan struct{}, 1),
 	}
 }
 
@@ -51,7 +51,7 @@ func (t *tcpClientHandshake) recv(segment gopacket.TransportLayer) {
 		}
 	case tcpSegment.RST && tcpSegment.ACK:
 		select {
-		case t.rstack <- struct{}{}:
+		case t.ackrst <- struct{}{}:
 		default:
 		}
 	}
@@ -81,7 +81,7 @@ func (t *tcpClientHandshake) do(ctx context.Context, c conn) error {
 			}
 			seq++
 			ack = synack.seq + 1
-		case <-t.rstack:
+		case <-t.ackrst:
 			return ErrConnReset
 		}
 
@@ -172,10 +172,19 @@ func (t *tcpServerHandshake) do(ctx context.Context, c conn) error {
 	return nil
 }
 
+func (tcp) shouldCreatePendingConn(segment gopacket.TransportLayer) bool {
+	t := segment.(*gplayers.TCP)
+	return t != nil && t.SYN && !t.ACK
+}
+
 func (udp) newClientHandshake() handshake {
 	return nil // no-op
 }
 
 func (udp) newServerHandshake() handshake {
 	return nil // no-op
+}
+
+func (udp) shouldCreatePendingConn(segment gopacket.TransportLayer) bool {
+	return true
 }

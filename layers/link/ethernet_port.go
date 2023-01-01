@@ -113,7 +113,7 @@ func (e *ethernetPort) startThreads() {
 					if !errors.Is(err, context.Canceled) {
 						l.
 							WithError(err).
-							Error("error sending ethernet frame")
+							Error("error sending ethernet frame bytes to medium")
 					}
 				} else if want := len(frame.buf); got < want {
 					l.
@@ -138,7 +138,7 @@ func (e *ethernetPort) startThreads() {
 				}
 				e.l.
 					WithError(err).
-					Error("error receiving ethernet frame")
+					Error("error receiving ethernet frame bytes from medium")
 				continue
 			}
 			if n > 0 {
@@ -177,9 +177,9 @@ func (e *ethernetPort) Send(ctx context.Context, frame *gplayers.Ethernet) error
 	// send
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("(*ethernetPort).Send(ctx) done while pushing frame to output buffer: %w", ctx.Err())
 	case <-e.ctx.Done():
-		return e.ctx.Err()
+		return fmt.Errorf("(*ethernetPort).ctx done while pushing frame to output buffer: %w", e.ctx.Err())
 	case e.out <- &outFrame{finalBuf, frame.DstMAC}:
 	}
 

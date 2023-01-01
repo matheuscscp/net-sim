@@ -9,9 +9,15 @@ import (
 )
 
 type (
-	ListenerNotFoundError struct {
-		Segment gopacket.TransportLayer
-		Addr    string
+	listenerNotFoundError struct {
+		segment gopacket.TransportLayer
+		addr    string
+	}
+
+	connNotFoundError struct {
+		segment    gopacket.TransportLayer
+		localAddr  string
+		remoteAddr string
 	}
 )
 
@@ -29,8 +35,12 @@ var (
 	ErrConnReset            = errors.New("connection reset")
 )
 
-func (l *ListenerNotFoundError) Error() string {
-	return fmt.Sprintf("listener not found for dst address: %s", l.Addr)
+func (l *listenerNotFoundError) Error() string {
+	return fmt.Sprintf("listener not found for dst address %s", l.addr)
+}
+
+func (c *connNotFoundError) Error() string {
+	return fmt.Sprintf("conn from %s not found for listener at %s", c.remoteAddr, c.localAddr)
 }
 
 // IsUseOfClosedConn tells whether the error is due to the port/connection
