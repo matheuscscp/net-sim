@@ -76,7 +76,7 @@ func (l *listener) Accept() (net.Conn, error) {
 	c.setHandshakeContext(ctx)
 	go func() {
 		defer cancel()
-		if err := c.handshake(); err != nil {
+		if err := c.doHandshake(); err != nil {
 			c.Close()
 			logger.
 				WithError(err).
@@ -199,7 +199,7 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	c.setHandshakeContext(ctx)
-	if err := c.handshake(); err != nil {
+	if err := c.doHandshake(); err != nil {
 		c.Close()
 		const msg = "error doing client handshake. connection was closed"
 		logger.
