@@ -33,16 +33,13 @@ var (
 
 func init() {
 	persistentFlags := rootCmd.PersistentFlags()
-	persistentFlags.StringVar(&logLevel, "log-level", "", "log level in logrus.Level format")
+	persistentFlags.StringVar(&logLevel, "log-level", "info", "log level in logrus.Level format")
 	persistentFlags.StringVar(&logFormat, "log-format", "text", `"text" or "json"`)
 	persistentFlags.StringVar(&metricsAddr, "metrics-addr", "", "address for /metrics HTTP endpoint")
 }
 
 func setupLogger() error {
 	// set level
-	if logLevel == "" {
-		return nil
-	}
 	lvl, err := logrus.ParseLevel(logLevel)
 	if err != nil {
 		return err

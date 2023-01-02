@@ -25,6 +25,11 @@ func DeserializeTCPSegment(datagram *gplayers.IPv4) (*gplayers.TCP, error) {
 	return segment, nil
 }
 
+func (tcp) shouldCreatePendingConn(segment gopacket.TransportLayer) bool {
+	t := segment.(*gplayers.TCP)
+	return t != nil && t.SYN && !t.ACK
+}
+
 func (udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return DeserializeUDPSegment(datagram)
 }
@@ -36,6 +41,10 @@ func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
 		return nil, fmt.Errorf("error deserializing udp layer: %w", pkt.ErrorLayer().Error())
 	}
 	return segment, nil
+}
+
+func (udp) shouldCreatePendingConn(segment gopacket.TransportLayer) bool {
+	return true
 }
 
 func validateChecksum(datagram *gplayers.IPv4, segment gopacket.TransportLayer) error {
@@ -64,6 +73,7 @@ func fetchChecksum(segment gopacket.TransportLayer) uint16 {
 		return s.Checksum
 	case *gplayers.UDP:
 		return s.Checksum
+	default:
+		return 0
 	}
-	panic("not tcpip segment")
 }
