@@ -33,7 +33,10 @@ func TestTCPConn(t *testing.T) {
 		wg.Wait()
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
-		test.CloseIntfsAndFlagErrorForUnexpectedData(t, networkLayer.Interfaces()...)
+		for _, intf := range networkLayer.Interfaces() {
+			assert.NoError(t, intf.Close())
+			test.CloseEthPortsAndFlagErrorForUnexpectedData(t, intf.Card())
+		}
 	}()
 
 	// start network
@@ -80,7 +83,7 @@ func TestTCPConn(t *testing.T) {
 	assert.Equal(t, []byte("working"), b)
 }
 
-func TestTCPConnReset(t *testing.T) {
+func TestTCPServerNotListening(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer

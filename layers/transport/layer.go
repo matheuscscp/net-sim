@@ -125,11 +125,11 @@ func NewLayer(networkLayer network.Layer) Layer {
 								segment := &gplayers.TCP{
 									DstPort: unmatchedSegment.SrcPort,
 									SrcPort: unmatchedSegment.DstPort,
-									RST:     true,
 									ACK:     true,
+									RST:     true,
 								}
 								if err = l.send(ctx, datagramHeader, segment); err != nil {
-									err = fmt.Errorf("error sending tcp rstack segment: %w", err)
+									err = fmt.Errorf("error sending tcp ackrst segment: %w", err)
 								}
 							}
 

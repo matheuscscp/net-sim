@@ -27,6 +27,7 @@ type (
 		remoteAddr   addr
 		handshake    handshake
 		handshakeCtx context.Context
+		connReset    bool
 
 		ack          uint32
 		readMu       sync.Mutex
@@ -131,23 +132,28 @@ func (t *tcpConn) waitHandshake() error {
 }
 
 func (t *tcpConn) recv(segment gopacket.TransportLayer) {
-	// forward to handshake first
+	tcpSegment := segment.(*gplayers.TCP)
+
+	// forward to handshake as well
 	if handshake := t.handshake; handshake != nil {
-		handshake.recv(segment)
+		handshake.recv(tcpSegment)
+	}
+	if tcpSegment.SYN { // SYN and SYNACK are handshake-only
 		return
 	}
 
-	tcpSegment := segment.(*gplayers.TCP)
-
-	// handle ACK
-	if tcpSegment.ACK {
-		select {
-		case t.writeCh <- tcpSegment.Ack:
-		default:
-		}
+	// handle end of connection
+	if tcpSegment.FIN {
+		t.Close()
+		return
+	}
+	if tcpSegment.RST {
+		t.connReset = true
+		t.closeInternalResourcesAndDeleteConn()
+		return
 	}
 
-	// handle data
+	// forward data to Read()
 	if len(tcpSegment.Payload) > 0 {
 		select {
 		case t.readCh <- tcpSegment:
@@ -155,26 +161,13 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 		}
 	}
 
-	// handle FIN
-	if tcpSegment.FIN {
-		t.Close()
+	// forward ACKs to Write()
+	if tcpSegment.ACK {
+		select {
+		case t.writeCh <- tcpSegment.Ack:
+		default:
+		}
 	}
-}
-
-func (t *tcpConn) newDatagramHeaderAndSegment() (*gplayers.IPv4, *gplayers.TCP) {
-	datagramHeader := &gplayers.IPv4{
-		DstIP:    t.remoteAddr.ipAddress.Raw(),
-		Protocol: gplayers.IPProtocolTCP,
-	}
-	if t.l.ipAddress != nil {
-		datagramHeader.SrcIP = t.l.ipAddress.Raw()
-	}
-	segment := &gplayers.TCP{
-		DstPort: gplayers.TCPPort(t.remoteAddr.port),
-		SrcPort: gplayers.TCPPort(t.l.port),
-		Window:  TCPWindowSize,
-	}
-	return datagramHeader, segment
 }
 
 func (t *tcpConn) Read(b []byte) (int, error) {
@@ -189,9 +182,11 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 	var deadlineExceeded bool
 	ctx, cancel := t.readDeadline.withContext(t.ctx, &deadlineExceeded)
 	defer cancel()
-	ctxDone := ctx.Done()
 	if deadlineExceeded {
 		return 0, ErrDeadlineExceeded
+	}
+	if t.connReset {
+		return 0, ErrConnReset
 	}
 	if ctx.Err() != nil {
 		return 0, fmt.Errorf("(*tcpConn).ctx done before reading bytes: %w", ctx.Err())
@@ -199,15 +194,11 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 
 	// if some bytes are already available, return them right away
 	if len(t.readBuf) > 0 {
-		n := copy(b, t.readBuf)
-		t.readBuf = t.readBuf[n:]
-		if len(t.readBuf) == 0 {
-			t.readBuf = nil
-		}
-		return n, nil
+		return t.pullReadBuf(b), nil
 	}
 
 	// no bytes available, block waiting for some
+	ctxDone := ctx.Done()
 	for {
 		// look up cache first
 		var ok bool
@@ -219,6 +210,9 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 			case <-ctxDone:
 				if deadlineExceeded {
 					return 0, ErrDeadlineExceeded
+				}
+				if t.connReset {
+					return 0, ErrConnReset
 				}
 				return 0, fmt.Errorf("(*tcpConn).ctx done while waiting for tcp segment: %w", ctx.Err())
 			case segment := <-t.readCh:
@@ -239,25 +233,22 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 				t.readBuf = segment.Payload
 			}
 		}
-
-		// FIXME(pimenta, #68)
 		t.ack += uint32(len(t.readBuf))
-		ackDatagramHeader, ackSegment := t.newDatagramHeaderAndSegment()
-		ackSegment.ACK = true
-		ackSegment.Ack = t.ack
-		if err := t.l.s.transportLayer.send(ctx, ackDatagramHeader, ackSegment); err != nil {
+		n := t.pullReadBuf(b)
+
+		// FIXME(pimenta, #68): inefficient use of the network
+		err := t.sendAckSegment(ctx)
+		if err != nil {
 			if deadlineExceeded {
-				return 0, ErrDeadlineExceeded
+				err = ErrDeadlineExceeded
 			}
-			return 0, fmt.Errorf("error sending tcp ack segment: %w", err)
+			if t.connReset {
+				err = ErrConnReset
+			}
+			err = fmt.Errorf("error sending tcp ack segment: %w", err)
 		}
 
-		n := copy(b, t.readBuf)
-		t.readBuf = t.readBuf[n:]
-		if len(t.readBuf) == 0 {
-			t.readBuf = nil
-		}
-		return n, nil
+		return n, err
 	}
 }
 
@@ -364,20 +355,9 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 }
 
 func (t *tcpConn) Close() error {
-	// cancel ctx
-	var cancel context.CancelFunc
-	cancel, t.cancelCtx = t.cancelCtx, nil
-	if cancel == nil {
+	if !t.closeInternalResourcesAndDeleteConn() {
 		return nil
 	}
-	cancel()
-
-	// remove conn from listener so incoming segments are
-	// not directed to this conn anymore
-	t.l.deleteConn(t.remoteAddr)
-
-	// close deadlines
-	pkgio.Close(t.readDeadline, t.writeDeadline)
 
 	// send FIN segment if connection was established
 	if t.handshake == nil {
@@ -421,4 +401,66 @@ func (t *tcpConn) SetReadDeadline(d time.Time) error {
 func (t *tcpConn) SetWriteDeadline(d time.Time) error {
 	t.writeDeadline.set(d)
 	return nil
+}
+
+// general helpers
+
+func (t *tcpConn) newDatagramHeaderAndSegment() (*gplayers.IPv4, *gplayers.TCP) {
+	datagramHeader := &gplayers.IPv4{
+		DstIP:    t.remoteAddr.ipAddress.Raw(),
+		Protocol: gplayers.IPProtocolTCP,
+	}
+	if t.l.ipAddress != nil {
+		datagramHeader.SrcIP = t.l.ipAddress.Raw()
+	}
+	segment := &gplayers.TCP{
+		DstPort: gplayers.TCPPort(t.remoteAddr.port),
+		SrcPort: gplayers.TCPPort(t.l.port),
+		Window:  TCPWindowSize,
+	}
+	return datagramHeader, segment
+}
+
+func (t *tcpConn) sendAckSegment(ctx context.Context) error {
+	datagramHeader, segment := t.newDatagramHeaderAndSegment()
+	segment.ACK = true
+	segment.Ack = t.ack
+	return t.l.s.transportLayer.send(ctx, datagramHeader, segment)
+}
+
+func (t *tcpConn) sendAckrstSegment(ctx context.Context) error {
+	datagramHeader, segment := t.newDatagramHeaderAndSegment()
+	segment.ACK = true
+	segment.RST = true
+	return t.l.s.transportLayer.send(ctx, datagramHeader, segment)
+}
+
+func (t *tcpConn) closeInternalResourcesAndDeleteConn() bool {
+	// cancel ctx
+	var cancel context.CancelFunc
+	cancel, t.cancelCtx = t.cancelCtx, nil
+	if cancel == nil {
+		return false
+	}
+	cancel()
+
+	// remove conn from listener so incoming segments are
+	// not directed to this conn anymore
+	t.l.deleteConn(t.remoteAddr)
+
+	// close deadlines
+	pkgio.Close(t.readDeadline, t.writeDeadline)
+
+	return true
+}
+
+// read helpers
+
+func (t *tcpConn) pullReadBuf(b []byte) int {
+	n := copy(b, t.readBuf)
+	t.readBuf = t.readBuf[n:]
+	if len(t.readBuf) == 0 {
+		t.readBuf = nil
+	}
+	return n
 }
