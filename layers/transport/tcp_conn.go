@@ -372,6 +372,13 @@ func (t *tcpConn) Close() error {
 	}
 	cancel()
 
+	// remove conn from listener so arriving segments are
+	// not directed to this conn anymore
+	t.l.deleteConn(t.remoteAddr)
+
+	// close deadlines
+	pkgio.Close(t.readDeadline, t.writeDeadline)
+
 	// send FIN segment
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -382,11 +389,7 @@ func (t *tcpConn) Close() error {
 		return fmt.Errorf("error sending tcp fin segment: %w", err)
 	}
 
-	// remove conn from listener so arriving segments are
-	// not directed to this conn anymore
-	t.l.deleteConn(t.remoteAddr)
-
-	return pkgio.Close(t.readDeadline, t.writeDeadline)
+	return nil
 }
 
 func (t *tcpConn) LocalAddr() net.Addr {
