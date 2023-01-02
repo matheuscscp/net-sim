@@ -21,12 +21,12 @@ import (
 
 type (
 	tcpConn struct {
-		ctx        context.Context
-		cancelCtx  context.CancelFunc
-		l          *listener
-		remoteAddr addr
-		h          handshake
-		hCtx       context.Context
+		ctx          context.Context
+		cancelCtx    context.CancelFunc
+		l            *listener
+		remoteAddr   addr
+		handshake    handshake
+		handshakeCtx context.Context
 
 		ack          uint32
 		readMu       sync.Mutex
@@ -76,7 +76,7 @@ func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 		cancelCtx:  cancel,
 		l:          l,
 		remoteAddr: remoteAddr,
-		h:          h,
+		handshake:  h,
 
 		readCh:       make(chan *gplayers.TCP, channelSize),
 		readDeadline: newDeadline(),
@@ -90,41 +90,41 @@ func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
 }
 
 func (t *tcpConn) setHandshakeContext(ctx context.Context) {
-	t.hCtx = ctx
+	t.handshakeCtx = ctx
 }
 
 // handshake must be called after a non-nil handshake context
 // has been set with setHandshakeContext().
-func (t *tcpConn) handshake() error {
-	if handshake := t.h; handshake != nil {
+func (t *tcpConn) doHandshake() error {
+	if t.handshake != nil {
 		var tCtxDone bool
-		ctx, cancel := pkgcontext.WithCancelOnAnotherContext(t.hCtx, t.ctx, &tCtxDone)
+		ctx, cancel := pkgcontext.WithCancelOnAnotherContext(t.handshakeCtx, t.ctx, &tCtxDone)
 		defer cancel()
-		if err := handshake.do(ctx, t); err != nil {
+		if err := t.handshake.do(ctx, t); err != nil {
 			if pkgcontext.IsContextError(ctx, err) {
 				if tCtxDone {
 					return fmt.Errorf("(*tcpConn).ctx done while doing handshake: %w", err)
 				}
-				return fmt.Errorf("(*tcpConn).hCtx done while doing handshake: %w", err)
+				return fmt.Errorf("(*tcpConn).handshakeCtx done while doing handshake: %w", err)
 			}
 			return err
 		}
-		t.h = nil
+		t.handshake = nil
 	}
 	return nil
 }
 
 func (t *tcpConn) waitHandshake() error {
-	if t.h == nil {
+	if t.handshake == nil {
 		return nil
 	}
 
 	select {
-	case <-t.hCtx.Done():
-		if t.h == nil {
+	case <-t.handshakeCtx.Done():
+		if t.handshake == nil {
 			return nil
 		}
-		return fmt.Errorf("(*tcpConn).hCtx done while waiting for handshake: %w", t.hCtx.Err())
+		return fmt.Errorf("(*tcpConn).handshakeCtx done while waiting for handshake: %w", t.handshakeCtx.Err())
 	case <-t.ctx.Done():
 		return fmt.Errorf("(*tcpConn).ctx done while waiting for handshake: %w", t.ctx.Err())
 	}
@@ -132,7 +132,7 @@ func (t *tcpConn) waitHandshake() error {
 
 func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 	// forward to handshake first
-	if handshake := t.h; handshake != nil {
+	if handshake := t.handshake; handshake != nil {
 		handshake.recv(segment)
 		return
 	}
@@ -372,21 +372,23 @@ func (t *tcpConn) Close() error {
 	}
 	cancel()
 
-	// remove conn from listener so arriving segments are
+	// remove conn from listener so incoming segments are
 	// not directed to this conn anymore
 	t.l.deleteConn(t.remoteAddr)
 
 	// close deadlines
 	pkgio.Close(t.readDeadline, t.writeDeadline)
 
-	// send FIN segment
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	finDatagramHeader, finSegment := t.newDatagramHeaderAndSegment()
-	finSegment.FIN = true
-	finSegment.Seq = t.seq
-	if err := t.l.s.transportLayer.send(ctx, finDatagramHeader, finSegment); err != nil {
-		return fmt.Errorf("error sending tcp fin segment: %w", err)
+	// send FIN segment if connection was established
+	if t.handshake == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		finDatagramHeader, finSegment := t.newDatagramHeaderAndSegment()
+		finSegment.FIN = true
+		finSegment.Seq = t.seq
+		if err := t.l.s.transportLayer.send(ctx, finDatagramHeader, finSegment); err != nil {
+			return fmt.Errorf("error sending tcp fin segment: %w", err)
+		}
 	}
 
 	return nil

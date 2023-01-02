@@ -17,9 +17,9 @@ type (
 		// it can block on this context, waiting for the handshake
 		// to finish before reading or writing bytes.
 		setHandshakeContext(ctx context.Context)
-		// handshake must be called after a non-nil handshake context
+		// doHandshake must be called after a non-nil doHandshake context
 		// has been set with setHandshakeContext().
-		handshake() error
+		doHandshake() error
 		recv(segment gopacket.TransportLayer)
 	}
 

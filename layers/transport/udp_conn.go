@@ -44,7 +44,7 @@ func (u *udpConn) setHandshakeContext(ctx context.Context) {
 	// no-op
 }
 
-func (u *udpConn) handshake() error {
+func (u *udpConn) doHandshake() error {
 	return nil // no-op
 }
 
