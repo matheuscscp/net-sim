@@ -266,7 +266,7 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr, segment gopacket.Tra
 		return nil
 	}
 
-	// port is listening. find or create a new pending conn
+	// port is listening (this is a server). find or create a new pending conn
 	conn, ok = l.pendingConns[remoteAddr]
 	if !ok {
 		conn = l.protocol.factory.newConn(l, remoteAddr, l.protocol.factory.newServerHandshake())
