@@ -74,8 +74,8 @@ type (
 
 	layer struct {
 		networkLayer network.Layer
-		tcp          *listenerSet
-		udp          *listenerSet
+		tcp          *protocol
+		udp          *protocol
 		cancelCtx    context.CancelFunc
 		wg           sync.WaitGroup
 		giantBuf     chan *gplayers.IPv4
@@ -98,8 +98,8 @@ func NewLayer(networkLayer network.Layer) Layer {
 		cancelCtx:    cancel,
 		giantBuf:     make(chan *gplayers.IPv4, demuxThreads*channelSize),
 	}
-	l.tcp = newListenerSet(l, tcp{})
-	l.udp = newListenerSet(l, udp{})
+	l.tcp = newProtocol(l, tcpFactory{})
+	l.udp = newProtocol(l, udpFactory{})
 
 	// create thread for listening to IP datagrams and push them
 	// into the giant buffer

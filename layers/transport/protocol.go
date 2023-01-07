@@ -7,51 +7,65 @@ import (
 	"net"
 	"sync"
 
-	gplayers "github.com/google/gopacket/layers"
 	pkgio "github.com/matheuscscp/net-sim/pkg/io"
+
+	"github.com/google/gopacket"
+	gplayers "github.com/google/gopacket/layers"
 )
 
 type (
-	listenerSet struct {
-		transportLayer  *layer
-		protocolFactory protocolFactory
+	protocol struct {
+		layer   *layer
+		factory protocolFactory
 
 		listenersMu sync.RWMutex
 		listeners   map[uint16]*listener
 	}
+
+	protocolFactory interface {
+		newClientHandshake() handshake
+		newServerHandshake() handshake
+		newConn(l *listener, remoteAddr addr, h handshake) conn
+		newAddr(addr addr) net.Addr
+		decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error)
+		shouldCreatePendingConn(segment gopacket.TransportLayer) bool
+	}
+
+	tcpFactory struct{}
+	udpFactory struct{}
 )
 
-func newListenerSet(transportLayer *layer, factory protocolFactory) *listenerSet {
-	return &listenerSet{
-		transportLayer:  transportLayer,
-		protocolFactory: factory,
-		listeners:       make(map[uint16]*listener),
+func newProtocol(layer *layer, factory protocolFactory) *protocol {
+	return &protocol{
+		layer:     layer,
+		factory:   factory,
+		listeners: make(map[uint16]*listener),
 	}
 }
 
-func (s *listenerSet) listen(ctx context.Context, address string) (*listener, error) {
+func (p *protocol) listen(ctx context.Context, address string) (*listener, error) {
 	// parse address
 	port, ipAddress, err := parseHostPort(address, false /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
 
-	s.listenersMu.Lock()
-	defer s.listenersMu.Unlock()
+	p.listenersMu.Lock()
+	defer p.listenersMu.Unlock()
 
-	if s.listeners == nil {
+	if p.listeners == nil {
 		return nil, ErrProtocolClosed
 	}
 
 	// if port is zero, choose a free port
 	if port == 0 {
-		for p := uint16(65535); 1 <= p; p-- {
-			if _, ok := s.listeners[p]; !ok {
-				port = p
+		for candidate := uint16(65535); 1 <= candidate; candidate-- {
+			if _, ok := p.listeners[candidate]; !ok {
+				port = candidate
 				break
 			}
 			if ctx.Err() != nil {
-				return nil, fmt.Errorf("(*listenerSet).listen(ctx) done while choosing free port: %w", ctx.Err())
+				return nil, fmt.Errorf("(*protocol).listen(ctx) done while choosing free port: %w", ctx.Err())
 			}
 		}
 		if port == 0 {
@@ -60,20 +74,20 @@ func (s *listenerSet) listen(ctx context.Context, address string) (*listener, er
 	}
 
 	// check port already in use
-	if _, ok := s.listeners[port]; ok {
+	if _, ok := p.listeners[port]; ok {
 		return nil, ErrPortAlreadyInUse
 	}
 
 	// allocate port
-	l := newListener(s, port, ipAddress)
-	s.listeners[port] = l
+	l := newListener(p, port, ipAddress)
+	p.listeners[port] = l
 
 	return l, nil
 }
 
-func (s *listenerSet) dial(ctx context.Context, localAddr, remoteAddr string) (net.Conn, error) {
+func (p *protocol) dial(ctx context.Context, localAddr, remoteAddr string) (net.Conn, error) {
 	// listen and stop accepting connections
-	l, err := s.listen(ctx, localAddr)
+	l, err := p.listen(ctx, localAddr)
 	if err != nil {
 		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
 	}
@@ -89,9 +103,9 @@ func (s *listenerSet) dial(ctx context.Context, localAddr, remoteAddr string) (n
 	return &clientConn{c}, nil
 }
 
-func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) error {
+func (p *protocol) decapAndDemux(datagram *gplayers.IPv4) error {
 	// decap
-	segment, err := s.protocolFactory.decap(datagram)
+	segment, err := p.factory.decap(datagram)
 	if err != nil {
 		return fmt.Errorf("error decapsulating transport layer: %w", err)
 	}
@@ -100,13 +114,13 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) error {
 	// find listener
 	dstPort, dstIPAddress := portFromEndpoint(flow.Dst()), gplayers.NewIPEndpoint(datagram.DstIP)
 	localAddr := addr{dstPort, dstIPAddress}
-	s.listenersMu.RLock()
-	if s.listeners == nil {
-		s.listenersMu.RUnlock()
+	p.listenersMu.RLock()
+	if p.listeners == nil {
+		p.listenersMu.RUnlock()
 		return ErrProtocolClosed
 	}
-	l, ok := s.listeners[dstPort]
-	s.listenersMu.RUnlock()
+	l, ok := p.listeners[dstPort]
+	p.listenersMu.RUnlock()
 	if !ok || !l.matchesDstIPAddress(dstIPAddress) {
 		return &listenerNotFoundError{
 			segment: segment,
@@ -130,24 +144,24 @@ func (s *listenerSet) decapAndDemux(datagram *gplayers.IPv4) error {
 	return nil
 }
 
-func (s *listenerSet) deleteListener(l *listener) {
-	s.listenersMu.Lock()
-	if s.listeners != nil {
-		delete(s.listeners, l.port)
+func (p *protocol) deleteListener(l *listener) {
+	p.listenersMu.Lock()
+	if p.listeners != nil {
+		delete(p.listeners, l.port)
 	}
-	s.listenersMu.Unlock()
+	p.listenersMu.Unlock()
 }
 
-func (s *listenerSet) Close() error {
+func (p *protocol) Close() error {
 	// delete the listeners map so new listen() calls fail
 	var listeners map[uint16]*listener
-	s.listenersMu.Lock()
-	listeners, s.listeners = s.listeners, nil
+	p.listenersMu.Lock()
+	listeners, p.listeners = p.listeners, nil
 	if listeners == nil {
-		s.listenersMu.Unlock()
+		p.listenersMu.Unlock()
 		return nil
 	}
-	s.listenersMu.Unlock()
+	p.listenersMu.Unlock()
 
 	// close listeners
 	closers := make([]io.Closer, 0, len(listeners))

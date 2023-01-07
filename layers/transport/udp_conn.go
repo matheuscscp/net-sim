@@ -19,7 +19,7 @@ type (
 	udpConn struct {
 		ctx           context.Context
 		cancelCtx     context.CancelFunc
-		l             *listener
+		listener      *listener
 		remoteAddr    addr
 		in            chan []byte
 		readDeadline  *deadline
@@ -27,12 +27,12 @@ type (
 	}
 )
 
-func (udp) newConn(l *listener, remoteAddr addr, _ handshake) conn {
+func (udpFactory) newConn(listener *listener, remoteAddr addr, _ handshake) conn {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &udpConn{
 		ctx:           ctx,
 		cancelCtx:     cancel,
-		l:             l,
+		listener:      listener,
 		remoteAddr:    remoteAddr,
 		in:            make(chan []byte, channelSize),
 		readDeadline:  newDeadline(),
@@ -95,14 +95,14 @@ func (u *udpConn) Write(b []byte) (n int, err error) {
 		DstIP:    u.remoteAddr.ipAddress.Raw(),
 		Protocol: gplayers.IPProtocolUDP,
 	}
-	if u.l.ipAddress != nil {
-		datagramHeader.SrcIP = u.l.ipAddress.Raw()
+	if u.listener.ipAddress != nil {
+		datagramHeader.SrcIP = u.listener.ipAddress.Raw()
 	}
 	segment := &gplayers.UDP{
 		BaseLayer: gplayers.BaseLayer{
 			Payload: b,
 		},
-		SrcPort: gplayers.UDPPort(u.l.port),
+		SrcPort: gplayers.UDPPort(u.listener.port),
 		DstPort: gplayers.UDPPort(u.remoteAddr.port),
 		Length:  uint16(len(b) + UDPHeaderLength),
 	}
@@ -119,7 +119,7 @@ func (u *udpConn) Write(b []byte) (n int, err error) {
 	}
 
 	// write
-	if err := u.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
+	if err := u.listener.protocol.layer.send(ctx, datagramHeader, segment); err != nil {
 		if deadlineExceeded {
 			return 0, ErrDeadlineExceeded
 		}
@@ -143,14 +143,14 @@ func (u *udpConn) Close() error {
 
 	// remove conn from listener so arriving segments are
 	// not directed to this conn anymore
-	u.l.deleteConn(u.remoteAddr)
+	u.listener.deleteConn(u.remoteAddr)
 
 	// close deadlines
 	return pkgio.Close(u.readDeadline, u.writeDeadline)
 }
 
 func (u *udpConn) LocalAddr() net.Addr {
-	return u.l.Addr()
+	return u.listener.Addr()
 }
 
 func (u *udpConn) RemoteAddr() net.Addr {

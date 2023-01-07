@@ -24,7 +24,7 @@ type (
 	listener struct {
 		acceptCtx       context.Context
 		cancelAcceptCtx context.CancelFunc
-		s               *listenerSet
+		protocol        *protocol
 		port            uint16
 		ipAddress       *gopacket.Endpoint
 
@@ -39,7 +39,7 @@ var (
 )
 
 func newListener(
-	s *listenerSet,
+	protocol *protocol,
 	port uint16,
 	ipAddress *gopacket.Endpoint,
 ) *listener {
@@ -47,7 +47,7 @@ func newListener(
 	l := &listener{
 		acceptCtx:       acceptCtx,
 		cancelAcceptCtx: cancelAcceptCtx,
-		s:               s,
+		protocol:        protocol,
 		port:            port,
 		ipAddress:       ipAddress,
 		conns:           make(map[addr]conn),
@@ -62,22 +62,22 @@ func (l *listener) matchesDstIPAddress(dstIPAddress gopacket.Endpoint) bool {
 }
 
 func (l *listener) Accept() (net.Conn, error) {
-	c, err := l.waitForPendingConnAndMoveToConns()
+	conn, err := l.waitForPendingConnAndMoveToConns()
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for pending connection: %w", err)
 	}
-	logger := l.connLogger(c)
+	logger := l.connLogger(conn)
 	logger.Debug("Accept(): conn created")
 
 	// a handshake should not block the goroutine calling Accept(),
 	// hence we call it on a new goroutine instead. the same is not
 	// true when Dial()ing
 	ctx, cancel := context.WithTimeout(l.acceptCtx, 5*time.Second)
-	c.setHandshakeContext(ctx)
+	conn.setHandshakeContext(ctx)
 	go func() {
 		defer cancel()
-		if err := c.doHandshake(); err != nil {
-			c.Close()
+		if err := conn.doHandshake(); err != nil {
+			conn.Close()
 			logger.
 				WithError(err).
 				Error("error doing server handshake. connection was closed")
@@ -86,7 +86,7 @@ func (l *listener) Accept() (net.Conn, error) {
 		}
 	}()
 
-	return c, nil
+	return conn, nil
 }
 
 func (l *listener) waitForPendingConnAndMoveToConns() (conn, error) {
@@ -105,13 +105,13 @@ func (l *listener) waitForPendingConnAndMoveToConns() (conn, error) {
 		}
 	}
 
-	// a pending conn is now availble, pick the first and remove from map
-	var a addr
-	var c conn
-	for a, c = range l.pendingConns {
+	// remoteAddr pending conn is now availble, pick the first and remove from map
+	var remoteAddr addr
+	var conn conn
+	for remoteAddr, conn = range l.pendingConns {
 		break
 	}
-	delete(l.pendingConns, a)
+	delete(l.pendingConns, remoteAddr)
 
 	// add to accepted conns
 	l.connsMu.Lock()
@@ -119,9 +119,9 @@ func (l *listener) waitForPendingConnAndMoveToConns() (conn, error) {
 	if l.conns == nil {
 		return nil, ErrListenerClosed
 	}
-	l.conns[a] = c
+	l.conns[remoteAddr] = conn
 
-	return c, nil
+	return conn, nil
 }
 
 func (l *listener) Close() error {
@@ -134,12 +134,12 @@ func (l *listener) Close() error {
 		return nil
 	}
 	l.connsMu.Unlock()
-	l.s.deleteListener(l)
+	l.protocol.deleteListener(l)
 
 	// close conns
 	closers := make([]io.Closer, 0, len(conns))
-	for _, c := range conns {
-		closers = append(closers, c)
+	for _, conn := range conns {
+		closers = append(closers, conn)
 	}
 	err := pkgio.Close(closers...)
 
@@ -166,18 +166,18 @@ func (l *listener) stopListening() error {
 
 	// close pending conns
 	closers := make([]io.Closer, 0, len(pendingConns))
-	for _, c := range pendingConns {
-		closers = append(closers, c)
+	for _, conn := range pendingConns {
+		closers = append(closers, conn)
 	}
 	return pkgio.Close(closers...)
 }
 
 func (l *listener) Addr() net.Addr {
-	a := addr{port: l.port}
+	localAddr := addr{port: l.port}
 	if l.ipAddress != nil {
-		a.ipAddress = *l.ipAddress
+		localAddr.ipAddress = *l.ipAddress
 	}
-	return l.s.protocolFactory.newAddr(a)
+	return l.protocol.factory.newAddr(localAddr)
 }
 
 func (l *listener) Dial(ctx context.Context, remoteAddr string) (net.Conn, error) {
@@ -186,17 +186,17 @@ func (l *listener) Dial(ctx context.Context, remoteAddr string) (net.Conn, error
 	if err != nil {
 		return nil, fmt.Errorf("error parsing remoteAddr: %w", err)
 	}
-	c, err := l.createClientConn(addr{remotePort, *remoteIPAddr})
+	conn, err := l.createClientConn(addr{remotePort, *remoteIPAddr})
 	if err != nil {
 		return nil, err
 	}
-	logger := l.connLogger(c)
+	logger := l.connLogger(conn)
 	logger.Debug("Dial(): conn created")
 
 	// handshake
-	c.setHandshakeContext(ctx)
-	if err := c.doHandshake(); err != nil {
-		c.Close()
+	conn.setHandshakeContext(ctx)
+	if err := conn.doHandshake(); err != nil {
+		conn.Close()
 		const msg = "error doing client handshake. connection was closed"
 		logger.
 			WithError(err).
@@ -204,7 +204,7 @@ func (l *listener) Dial(ctx context.Context, remoteAddr string) (net.Conn, error
 		return nil, fmt.Errorf("%s: %w", msg, err)
 	}
 	logger.Debug("success doing client handshake")
-	return c, nil
+	return conn, nil
 }
 
 func (l *listener) createClientConn(remoteAddr addr) (conn, error) {
@@ -219,9 +219,9 @@ func (l *listener) createClientConn(remoteAddr addr) (conn, error) {
 		return nil, fmt.Errorf("a connection to %s already exists", remoteAddr.String())
 	}
 
-	c := l.s.protocolFactory.newConn(l, remoteAddr, l.s.protocolFactory.newClientHandshake())
-	l.conns[remoteAddr] = c
-	return c, nil
+	conn := l.protocol.factory.newConn(l, remoteAddr, l.protocol.factory.newClientHandshake())
+	l.conns[remoteAddr] = conn
+	return conn, nil
 }
 
 func (l *listener) findConnOrCreatePending(remoteAddr addr, segment gopacket.TransportLayer) conn {
@@ -232,14 +232,14 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr, segment gopacket.Tra
 		l.connsMu.RUnlock()
 		return nil
 	}
-	c, ok := l.conns[remoteAddr]
+	conn, ok := l.conns[remoteAddr]
 	l.connsMu.RUnlock()
 	if ok {
-		return c
+		return conn
 	}
 
 	// conn does not exist. acquire pendingConns lock
-	if !l.s.protocolFactory.shouldCreatePendingConn(segment) {
+	if !l.protocol.factory.shouldCreatePendingConn(segment) {
 		return nil
 	}
 	l.pendingConnsMu.Lock()
@@ -253,10 +253,10 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr, segment gopacket.Tra
 		l.connsMu.RUnlock()
 		return nil
 	}
-	c, ok = l.conns[remoteAddr]
+	conn, ok = l.conns[remoteAddr]
 	l.connsMu.RUnlock()
 	if ok {
-		return c
+		return conn
 	}
 
 	// no already existing conn, and we hold the pendingConns lock.
@@ -267,14 +267,14 @@ func (l *listener) findConnOrCreatePending(remoteAddr addr, segment gopacket.Tra
 	}
 
 	// port is listening. find or create a new pending conn
-	c, ok = l.pendingConns[remoteAddr]
+	conn, ok = l.pendingConns[remoteAddr]
 	if !ok {
-		c = l.s.protocolFactory.newConn(l, remoteAddr, l.s.protocolFactory.newServerHandshake())
-		l.pendingConns[remoteAddr] = c
+		conn = l.protocol.factory.newConn(l, remoteAddr, l.protocol.factory.newServerHandshake())
+		l.pendingConns[remoteAddr] = conn
 		l.pendingConnsCond.Broadcast() // unblock Accept()
 	}
 
-	return c
+	return conn
 }
 
 func (l *listener) deleteConn(remoteAddr addr) {
@@ -286,10 +286,10 @@ func (l *listener) deleteConn(remoteAddr addr) {
 }
 
 func (l *listener) connLogger(c conn) logrus.FieldLogger {
-	a := l.Addr()
+	localAddr := l.Addr()
 	return logrus.
 		WithField("debug_conn_name", petname.Generate(2, "_")).
-		WithField("protocol", a.Network()).
-		WithField("local_addr", a.String()).
+		WithField("protocol", localAddr.Network()).
+		WithField("local_addr", localAddr.String()).
 		WithField("remote_addr", c.RemoteAddr().String())
 }

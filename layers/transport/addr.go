@@ -30,7 +30,7 @@ func (a *addr) String() string {
 	return fmt.Sprintf("%s:%d", a.ipAddress, a.port)
 }
 
-func (tcp) newAddr(addr addr) net.Addr {
+func (tcpFactory) newAddr(addr addr) net.Addr {
 	return newTCPAddr(addr)
 }
 
@@ -42,7 +42,7 @@ func (*tcpAddr) Network() string {
 	return TCP
 }
 
-func (udp) newAddr(addr addr) net.Addr {
+func (udpFactory) newAddr(addr addr) net.Addr {
 	return newUDPAddr(addr)
 }
 

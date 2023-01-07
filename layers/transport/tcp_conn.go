@@ -23,7 +23,7 @@ type (
 	tcpConn struct {
 		ctx          context.Context
 		cancelCtx    context.CancelFunc
-		l            *listener
+		listener     *listener
 		remoteAddr   addr
 		handshake    handshake
 		handshakeCtx context.Context
@@ -65,19 +65,19 @@ var (
 	}, metricLabelsTCPConn)
 )
 
-func (tcp) newConn(l *listener, remoteAddr addr, h handshake) conn {
+func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handshake) conn {
 	ctx, cancel := context.WithCancel(context.Background())
 	metricLabels := prometheus.Labels{
-		observability.StackName: l.s.transportLayer.networkLayer.StackName(),
-		labelNameLocalAddr:      l.Addr().String(),
+		observability.StackName: listener.protocol.layer.networkLayer.StackName(),
+		labelNameLocalAddr:      listener.Addr().String(),
 		labelNameRemoteAddr:     remoteAddr.String(),
 	}
 	return &tcpConn{
 		ctx:        ctx,
 		cancelCtx:  cancel,
-		l:          l,
+		listener:   listener,
 		remoteAddr: remoteAddr,
-		handshake:  h,
+		handshake:  handshake,
 
 		readCh:       make(chan *gplayers.TCP, channelSize),
 		readDeadline: newDeadline(),
@@ -309,7 +309,7 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 			datagramHeader, segment := t.newDatagramHeaderAndSegment()
 			segment.Seq = t.seq + uint32(nextByte)
 			segment.Payload = b[nextByte:endOfPayload]
-			if err = t.l.s.transportLayer.send(ctx, datagramHeader, segment); err != nil {
+			if err = t.listener.protocol.layer.send(ctx, datagramHeader, segment); err != nil {
 				switch {
 				case deadlineExceeded:
 					err = ErrDeadlineExceeded
@@ -384,7 +384,7 @@ func (t *tcpConn) Close() error {
 		finDatagramHeader, finSegment := t.newDatagramHeaderAndSegment()
 		finSegment.FIN = true
 		finSegment.Seq = t.seq
-		if err := t.l.s.transportLayer.send(ctx, finDatagramHeader, finSegment); err != nil {
+		if err := t.listener.protocol.layer.send(ctx, finDatagramHeader, finSegment); err != nil {
 			return fmt.Errorf("error sending tcp fin segment: %w", err)
 		}
 	}
@@ -393,7 +393,7 @@ func (t *tcpConn) Close() error {
 }
 
 func (t *tcpConn) LocalAddr() net.Addr {
-	return t.l.Addr()
+	return t.listener.Addr()
 }
 
 func (t *tcpConn) RemoteAddr() net.Addr {
@@ -428,12 +428,12 @@ func (t *tcpConn) newDatagramHeaderAndSegment() (*gplayers.IPv4, *gplayers.TCP) 
 		DstIP:    t.remoteAddr.ipAddress.Raw(),
 		Protocol: gplayers.IPProtocolTCP,
 	}
-	if t.l.ipAddress != nil {
-		datagramHeader.SrcIP = t.l.ipAddress.Raw()
+	if t.listener.ipAddress != nil {
+		datagramHeader.SrcIP = t.listener.ipAddress.Raw()
 	}
 	segment := &gplayers.TCP{
 		DstPort: gplayers.TCPPort(t.remoteAddr.port),
-		SrcPort: gplayers.TCPPort(t.l.port),
+		SrcPort: gplayers.TCPPort(t.listener.port),
 		Window:  TCPWindowSize,
 	}
 	return datagramHeader, segment
@@ -443,14 +443,14 @@ func (t *tcpConn) sendAckSegment(ctx context.Context) error {
 	datagramHeader, segment := t.newDatagramHeaderAndSegment()
 	segment.ACK = true
 	segment.Ack = t.ack
-	return t.l.s.transportLayer.send(ctx, datagramHeader, segment)
+	return t.listener.protocol.layer.send(ctx, datagramHeader, segment)
 }
 
 func (t *tcpConn) sendAckrstSegment(ctx context.Context) error {
 	datagramHeader, segment := t.newDatagramHeaderAndSegment()
 	segment.ACK = true
 	segment.RST = true
-	return t.l.s.transportLayer.send(ctx, datagramHeader, segment)
+	return t.listener.protocol.layer.send(ctx, datagramHeader, segment)
 }
 
 func (t *tcpConn) closeInternalResourcesAndDeleteConn() bool {
@@ -464,7 +464,7 @@ func (t *tcpConn) closeInternalResourcesAndDeleteConn() bool {
 
 	// remove conn from listener so incoming segments are
 	// not directed to this conn anymore
-	t.l.deleteConn(t.remoteAddr)
+	t.listener.deleteConn(t.remoteAddr)
 
 	// close deadlines
 	pkgio.Close(t.readDeadline, t.writeDeadline)

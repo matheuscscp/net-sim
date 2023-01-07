@@ -32,13 +32,13 @@ type (
 	}
 )
 
-func (cc *clientConn) Close() error {
-	var l *listener
-	switch c := cc.Conn.(type) {
+func (c *clientConn) Close() error {
+	var listener *listener
+	switch conn := c.Conn.(type) {
 	case *tcpConn:
-		l = c.l
+		listener = conn.listener
 	case *udpConn:
-		l = c.l
+		listener = conn.listener
 	}
-	return pkgio.Close(cc.Conn, l)
+	return pkgio.Close(c.Conn, listener)
 }
