@@ -131,13 +131,19 @@ func NewLayer(networkLayer network.Layer) Layer {
 					switch datagram.Protocol {
 					case gplayers.IPProtocolTCP:
 						if err = l.tcp.decapAndDemux(datagram); err != nil {
-							// handle listener not found
+							// check listener not found and send reset segment
 							var listenerNotFoundErr *listenerNotFoundError
 							if errors.As(err, &listenerNotFoundErr) {
-								unmatchedSegment, ok := listenerNotFoundErr.segment.(*gplayers.TCP)
-								if ok && unmatchedSegment.FIN {
-									continue // TODO(pimenta, #71): acknowledge FIN segments properly
+								unmatchedSegment := listenerNotFoundErr.segment.(*gplayers.TCP)
+
+								// not necessary for FIN segments since this is likely
+								// a connection that was just closed from this side/host
+								// TODO(pimenta, #71): acknowledge FIN segments properly
+								if unmatchedSegment.FIN {
+									continue
 								}
+
+								// send
 								datagramHeader := &gplayers.IPv4{
 									DstIP:    datagram.SrcIP,
 									SrcIP:    datagram.DstIP,
@@ -154,23 +160,40 @@ func NewLayer(networkLayer network.Layer) Layer {
 								}
 							}
 
-							// handle conn not found
+							// print a debug log if the conn was not found
 							var connNotFoundErr *connNotFoundError
 							if errors.As(err, &connNotFoundErr) {
-								unmatchedSegment, ok := connNotFoundErr.segment.(*gplayers.TCP)
-								if ok {
-									if unmatchedSegment.FIN {
-										continue // TODO(pimenta, #71): acknowledge FIN segments properly
-									}
-									err = nil
-									logrus.
-										WithField("segment", unmatchedSegment).
-										Debug("conn not found for tcp segment")
+								unmatchedSegment := connNotFoundErr.segment.(*gplayers.TCP)
+
+								// no debug necessary for FIN segments since this is likely
+								// a connection that was just closed from this side/host
+								// TODO(pimenta, #71): acknowledge FIN segments properly
+								if unmatchedSegment.FIN {
+									continue
 								}
+
+								err = nil
+								logrus.
+									WithField("segment", unmatchedSegment).
+									Debug("conn not found for tcp segment")
 							}
 						}
 					case gplayers.IPProtocolUDP:
-						err = l.udp.decapAndDemux(datagram)
+						if err = l.udp.decapAndDemux(datagram); err != nil {
+							// print a debug log if listener or conn were not found
+							var unmatchedSegment *gplayers.UDP
+							if listenerNotFoundErr := (*listenerNotFoundError)(nil); errors.As(err, &listenerNotFoundErr) {
+								unmatchedSegment = listenerNotFoundErr.segment.(*gplayers.UDP)
+							} else if connNotFoundErr := (*connNotFoundError)(nil); errors.As(err, &connNotFoundErr) {
+								unmatchedSegment = connNotFoundErr.segment.(*gplayers.UDP)
+							}
+							if unmatchedSegment != nil {
+								err = nil
+								logrus.
+									WithField("segment", unmatchedSegment).
+									Debug("conn not found for udp segment")
+							}
+						}
 					}
 					if err != nil {
 						logrus.

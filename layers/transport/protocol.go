@@ -79,28 +79,28 @@ func (p *protocol) listen(ctx context.Context, address string) (*listener, error
 	}
 
 	// allocate port
-	l := newListener(p, port, ipAddress)
-	p.listeners[port] = l
+	listener := newListener(p, port, ipAddress)
+	p.listeners[port] = listener
 
-	return l, nil
+	return listener, nil
 }
 
 func (p *protocol) dial(ctx context.Context, localAddr, remoteAddr string) (net.Conn, error) {
 	// listen and stop accepting connections
-	l, err := p.listen(ctx, localAddr)
+	listener, err := p.listen(ctx, localAddr)
 	if err != nil {
 		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
 	}
-	if err := l.stopListening(); err != nil {
+	if err := listener.stopListening(); err != nil {
 		return nil, fmt.Errorf("error stopping client port from listening to incoming connections: %w", err)
 	}
 
 	// then dial
-	c, err := l.Dial(ctx, remoteAddr)
+	conn, err := listener.Dial(ctx, remoteAddr)
 	if err != nil {
 		return nil, err
 	}
-	return &clientConn{c}, nil
+	return &clientConn{conn}, nil
 }
 
 func (p *protocol) decapAndDemux(datagram *gplayers.IPv4) error {
@@ -119,9 +119,9 @@ func (p *protocol) decapAndDemux(datagram *gplayers.IPv4) error {
 		p.listenersMu.RUnlock()
 		return ErrProtocolClosed
 	}
-	l, ok := p.listeners[dstPort]
+	listener, ok := p.listeners[dstPort]
 	p.listenersMu.RUnlock()
-	if !ok || !l.matchesDstIPAddress(dstIPAddress) {
+	if !ok || !listener.matchesDstIPAddress(dstIPAddress) {
 		return &listenerNotFoundError{
 			segment: segment,
 			addr:    localAddr.String(),
@@ -131,8 +131,8 @@ func (p *protocol) decapAndDemux(datagram *gplayers.IPv4) error {
 	// find conn and receive
 	srcPort, srcIPAddress := portFromEndpoint(flow.Src()), gplayers.NewIPEndpoint(datagram.SrcIP)
 	remoteAddr := addr{srcPort, srcIPAddress}
-	if c := l.findConnOrCreatePending(remoteAddr, segment); c != nil {
-		c.recv(segment)
+	if conn := listener.findConnOrCreatePending(remoteAddr, segment); conn != nil {
+		conn.recv(segment)
 	} else {
 		return &connNotFoundError{
 			segment:    segment,
