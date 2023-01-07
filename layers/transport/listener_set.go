@@ -71,9 +71,9 @@ func (s *listenerSet) listen(ctx context.Context, address string) (*listener, er
 	return l, nil
 }
 
-func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error) {
-	// listen on a random port and stop accepting connections
-	l, err := s.listen(ctx, ":0")
+func (s *listenerSet) dial(ctx context.Context, localAddr, remoteAddr string) (net.Conn, error) {
+	// listen and stop accepting connections
+	l, err := s.listen(ctx, localAddr)
 	if err != nil {
 		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
 	}
@@ -82,7 +82,7 @@ func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error
 	}
 
 	// then dial
-	c, err := l.Dial(ctx, address)
+	c, err := l.Dial(ctx, remoteAddr)
 	if err != nil {
 		return nil, err
 	}

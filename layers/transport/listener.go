@@ -18,7 +18,7 @@ import (
 
 type (
 	Dialer interface {
-		Dial(ctx context.Context, address string) (net.Conn, error)
+		Dial(ctx context.Context, remoteAddr string) (net.Conn, error)
 	}
 
 	listener struct {
@@ -180,15 +180,13 @@ func (l *listener) Addr() net.Addr {
 	return l.s.protocolFactory.newAddr(a)
 }
 
-// Dial returns a net.Conn bound to the given address.
-// No network calls/handshakes are performed.
-func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
+func (l *listener) Dial(ctx context.Context, remoteAddr string) (net.Conn, error) {
 	// find conn or create
-	port, ipAddress, err := parseHostPort(address, true /*needIP*/)
+	remotePort, remoteIPAddr, err := parseHostPort(remoteAddr, true /*needIP*/)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing address: %w", err)
+		return nil, fmt.Errorf("error parsing remoteAddr: %w", err)
 	}
-	c, err := l.createClientConn(addr{port, *ipAddress})
+	c, err := l.createClientConn(addr{remotePort, *remoteIPAddr})
 	if err != nil {
 		return nil, err
 	}

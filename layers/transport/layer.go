@@ -22,28 +22,35 @@ type (
 	// to/from the IP network interfaces through these
 	// two protocols.
 	Layer interface {
-		// Listen binds the given IPv4:port address on the
+		// Listen binds the given IPv4:port localAddr on the
 		// given network ("tcp" or "udp") and returns a
 		// handler for accepting connections into that port.
 		// The port is said to be on the "listen" mode, which
-		// allows it to receive incoming connections. The
-		// IPv4 part of the address is optional, and if present
+		// allows it to receive incoming connections.
+		//
+		// The IPv4 part of the address is optional, and if present
 		// should match the IP address of one of the underlying
 		// network interfaces. This means that the port will
 		// only accept incoming connections targeted to this
-		// IP address. If the port zero is used, a random
+		// IP address.
+		//
+		// If the port "0" is used, a random
 		// port will be chosen.
-		Listen(ctx context.Context, network, address string) (net.Listener, error)
+		Listen(ctx context.Context, network, localAddr string) (net.Listener, error)
 
-		// Dial starts a connection with the given IPv4:port address
+		// Dial starts a connection with the given IPv4:port remoteAddr
 		// on the given network ("tcp" or "udp") and returns a handler
 		// for reading and writing data from/into this connection.
 		// The local port is chosen at random and will not accept
-		// any incoming connections. For UDP, creating a connection
+		// any incoming connections.
+		//
+		// For UDP, creating a connection
 		// means just binding the dst IPv4:port address to the
-		// connection handler (there's no handshake). DNS resolution
-		// is not support yet.
-		Dial(ctx context.Context, network, address string) (net.Conn, error)
+		// connection handler (there's no handshake).
+		//
+		// DNS resolution is not support yet.
+		Dial(ctx context.Context, network, remoteAddr string) (net.Conn, error)
+		Dialer() LayerDialer
 
 		// Close makes the transport layer stop listening to
 		// IP datagrams received and provided by the network
@@ -56,6 +63,15 @@ type (
 		Close() error
 	}
 
+	// LayerDialer allows for specifying the localAddr when
+	// dialing. The network ("tcp" or "udp") where the dialing
+	// will take place is fetched from the localAddr specified
+	// via WithLocalAddr().
+	LayerDialer interface {
+		WithLocalAddr(localAddr net.Addr) LayerDialer
+		Dial(ctx context.Context, remoteAddr string) (net.Conn, error)
+	}
+
 	layer struct {
 		networkLayer network.Layer
 		tcp          *listenerSet
@@ -63,6 +79,11 @@ type (
 		cancelCtx    context.CancelFunc
 		wg           sync.WaitGroup
 		giantBuf     chan *gplayers.IPv4
+	}
+
+	layerDialer struct {
+		*layer
+		localAddr net.Addr
 	}
 )
 
@@ -165,24 +186,33 @@ func NewLayer(networkLayer network.Layer) Layer {
 	return l
 }
 
-func (l *layer) Listen(ctx context.Context, network, address string) (net.Listener, error) {
+func (l *layer) Listen(ctx context.Context, network, localAddr string) (net.Listener, error) {
 	if network == TCP {
-		return l.tcp.listen(ctx, address)
+		return l.tcp.listen(ctx, localAddr)
 	}
 	if network == UDP {
-		return l.udp.listen(ctx, address)
+		return l.udp.listen(ctx, localAddr)
 	}
 	return nil, ErrInvalidNetwork
 }
 
-func (l *layer) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+func (l *layer) Dial(ctx context.Context, network, remoteAddr string) (net.Conn, error) {
+	const localAddrForRandomPort = ":0"
+	return l.dial(ctx, network, localAddrForRandomPort, remoteAddr)
+}
+
+func (l *layer) dial(ctx context.Context, network, localAddr, remoteAddr string) (net.Conn, error) {
 	if network == TCP {
-		return l.tcp.dial(ctx, address)
+		return l.tcp.dial(ctx, localAddr, remoteAddr)
 	}
 	if network == UDP {
-		return l.udp.dial(ctx, address)
+		return l.udp.dial(ctx, localAddr, remoteAddr)
 	}
 	return nil, ErrInvalidNetwork
+}
+
+func (l *layer) Dialer() LayerDialer {
+	return &layerDialer{layer: l}
 }
 
 func (l *layer) Close() error {
@@ -214,4 +244,16 @@ func (l *layer) send(
 		return fmt.Errorf("error sending transport segment: %w", err)
 	}
 	return nil
+}
+
+func (d *layerDialer) WithLocalAddr(localAddr net.Addr) LayerDialer {
+	d.localAddr = localAddr
+	return d
+}
+
+func (d *layerDialer) Dial(ctx context.Context, remoteAddr string) (net.Conn, error) {
+	if d.localAddr == nil {
+		return nil, fmt.Errorf("localAddr was not specified")
+	}
+	return d.layer.dial(ctx, d.localAddr.Network(), d.localAddr.String(), remoteAddr)
 }
