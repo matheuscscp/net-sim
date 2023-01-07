@@ -9,7 +9,7 @@ import (
 	gplayers "github.com/google/gopacket/layers"
 )
 
-func (tcp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+func (tcpFactory) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return DeserializeTCPSegment(datagram)
 }
 
@@ -25,12 +25,12 @@ func DeserializeTCPSegment(datagram *gplayers.IPv4) (*gplayers.TCP, error) {
 	return segment, nil
 }
 
-func (tcp) shouldCreatePendingConn(segment gopacket.TransportLayer) bool {
+func (tcpFactory) shouldCreatePendingConn(segment gopacket.TransportLayer) bool {
 	t := segment.(*gplayers.TCP)
 	return t != nil && t.SYN && !t.ACK
 }
 
-func (udp) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
+func (udpFactory) decap(datagram *gplayers.IPv4) (gopacket.TransportLayer, error) {
 	return DeserializeUDPSegment(datagram)
 }
 
@@ -43,7 +43,7 @@ func DeserializeUDPSegment(datagram *gplayers.IPv4) (*gplayers.UDP, error) {
 	return segment, nil
 }
 
-func (udp) shouldCreatePendingConn(segment gopacket.TransportLayer) bool {
+func (udpFactory) shouldCreatePendingConn(segment gopacket.TransportLayer) bool {
 	return true
 }
 
