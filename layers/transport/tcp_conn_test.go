@@ -3,6 +3,7 @@ package transport_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -46,7 +47,6 @@ func TestTCPConn(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, networkLayer)
 	transportLayer = transport.NewLayer(networkLayer)
-	httpRoundTripper := application.NewHTTPRoundTripper(transportLayer)
 
 	// start server
 	serverListener, err := transportLayer.Listen(ctx, transport.TCP, ":80")
@@ -69,18 +69,21 @@ func TestTCPConn(t *testing.T) {
 		}
 	}()
 
-	// create client
-	client := &http.Client{
-		Transport: httpRoundTripper,
+	// make multiple requests, each one with a new connection
+	for i := 0; i < 10; i++ {
+		tName := fmt.Sprintf("request%d", i)
+		t.Run(tName, func(t *testing.T) {
+			client := &http.Client{
+				Transport: application.NewHTTPRoundTripper(transportLayer),
+			}
+			resp, err := client.Get("http://127.0.0.1:80/")
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			b, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, []byte("working"), b)
+		})
 	}
-
-	// make request
-	resp, err := client.Get("http://127.0.0.1:80/")
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-	b, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("working"), b)
 }
 
 func TestTCPServerNotListening(t *testing.T) {

@@ -68,8 +68,8 @@ type (
 	// will take place is fetched from the localAddr specified
 	// via WithLocalAddr().
 	LayerDialer interface {
+		Dialer
 		WithLocalAddr(localAddr net.Addr) LayerDialer
-		Dial(ctx context.Context, remoteAddr string) (net.Conn, error)
 	}
 
 	layer struct {
@@ -140,6 +140,11 @@ func NewLayer(networkLayer network.Layer) Layer {
 								// a connection that was just closed from this side/host
 								// TODO(pimenta, #71): acknowledge FIN segments properly
 								if unmatchedSegment.FIN {
+									continue
+								}
+
+								// not necessary for RST segments (and also avoids a loop)
+								if unmatchedSegment.RST {
 									continue
 								}
 
