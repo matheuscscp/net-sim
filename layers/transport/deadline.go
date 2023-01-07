@@ -54,10 +54,10 @@ func (d *deadline) withContext(parent context.Context, exceeded *bool) (context.
 	d.mu.Lock()
 	if d.exceeded() {
 		d.mu.Unlock()
-		cancel()
 		if exceeded != nil {
 			*exceeded = true
 		}
+		cancel()
 		return ctx, cancel
 	}
 	d.mu.Unlock()
