@@ -78,7 +78,7 @@ func (s *listenerSet) dial(ctx context.Context, address string) (net.Conn, error
 		return nil, fmt.Errorf("error trying to listen on a free port: %w", err)
 	}
 	if err := l.stopListening(); err != nil {
-		return nil, fmt.Errorf("error closing local port for accepting connections: %w", err)
+		return nil, fmt.Errorf("error stopping client port from listening to incoming connections: %w", err)
 	}
 
 	// then dial

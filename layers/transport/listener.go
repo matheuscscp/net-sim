@@ -188,7 +188,7 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error parsing address: %w", err)
 	}
-	c, err := l.createConn(addr{port, *ipAddress})
+	c, err := l.createClientConn(addr{port, *ipAddress})
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +196,6 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	logger.Debug("Dial(): conn created")
 
 	// handshake
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	c.setHandshakeContext(ctx)
 	if err := c.doHandshake(); err != nil {
 		c.Close()
@@ -211,7 +209,7 @@ func (l *listener) Dial(ctx context.Context, address string) (net.Conn, error) {
 	return c, nil
 }
 
-func (l *listener) createConn(remoteAddr addr) (conn, error) {
+func (l *listener) createClientConn(remoteAddr addr) (conn, error) {
 	l.connsMu.Lock()
 	defer l.connsMu.Unlock()
 
