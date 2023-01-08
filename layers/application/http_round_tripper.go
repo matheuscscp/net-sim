@@ -9,7 +9,7 @@ import (
 
 // NewHTTPRoundTripper returns an http.RoundTripper for serving and
 // making HTTP requests.
-func NewHTTPRoundTripper(transportLayer transport.Layer) http.RoundTripper {
+func NewHTTPRoundTripper(transportLayer transport.Layer) *http.Transport {
 	return &http.Transport{
 		DialContext:           transportLayer.Dial,
 		ForceAttemptHTTP2:     true,
