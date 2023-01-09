@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -23,11 +24,26 @@ import (
 	"golang.org/x/net/http2/h2c"
 )
 
+type (
+	instrumentedTransportLayer struct {
+		transport.Layer
+		dialCnt int
+		dialMu  sync.Mutex
+	}
+)
+
+func (i *instrumentedTransportLayer) Dial(ctx context.Context, network, remoteAddr string) (net.Conn, error) {
+	i.dialMu.Lock()
+	i.dialCnt++
+	i.dialMu.Unlock()
+	return i.Layer.Dial(ctx, network, remoteAddr)
+}
+
 func TestTCPConn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	var wg sync.WaitGroup
 	var networkLayer network.Layer
-	var transportLayer transport.Layer
+	var transportLayer *instrumentedTransportLayer
 	var server *http.Server
 
 	defer func() {
@@ -50,9 +66,9 @@ func TestTCPConn(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, networkLayer)
-	transportLayer = transport.NewLayer(networkLayer)
+	transportLayer = &instrumentedTransportLayer{Layer: transport.NewLayer(networkLayer)}
 
-	// start http server
+	// start h2c server
 	serverListener, err := transportLayer.Listen(ctx, transport.TCP, ":80")
 	require.NoError(t, err)
 	require.NotNil(t, serverListener)
@@ -74,14 +90,17 @@ func TestTCPConn(t *testing.T) {
 		}
 	}()
 
-	// make multiple http1 requests in parallel, each one with a new client (hence new connection)
+	// make multiple http1 requests in parallel, each one with its own client, hence its own connection
 	var wgReqs sync.WaitGroup
-	defer wgReqs.Wait()
+	defer func() {
+		wgReqs.Wait()
+		assert.Equal(t, 21, transportLayer.dialCnt)
+	}()
 	for i := 0; i < 10; i++ {
+		client := &http.Client{Transport: application.NewHTTPRoundTripper(transportLayer)}
 		wgReqs.Add(1)
 		go func() {
 			defer wgReqs.Done()
-			client := &http.Client{Transport: application.NewHTTPRoundTripper(transportLayer)}
 			pet := petname.Generate(2, "_")
 			url := fmt.Sprintf("http://127.0.0.1:80?q=%s", pet)
 			resp, err := client.Get(url)
@@ -94,7 +113,7 @@ func TestTCPConn(t *testing.T) {
 		}()
 	}
 
-	// make multiple http1 requests in parallel with the same client (possibly the same connection)
+	// make multiple http1 requests in parallel with the same client, but not the same connection because of http1
 	client := &http.Client{Transport: application.NewHTTPRoundTripper(transportLayer)}
 	for i := 0; i < 10; i++ {
 		wgReqs.Add(1)
@@ -112,7 +131,7 @@ func TestTCPConn(t *testing.T) {
 		}()
 	}
 
-	// make multiple http2 requests in parallel with the same client (possibly the same connection)
+	// make multiple h2c requests in parallel with the same client, hence with the same connection
 	client2 := &http.Client{Transport: application.NewH2CRoundTripper(transportLayer)}
 	for i := 0; i < 10; i++ {
 		wgReqs.Add(1)
