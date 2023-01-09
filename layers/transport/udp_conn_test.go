@@ -129,7 +129,7 @@ func TestUDPClientServer(t *testing.T) {
 	assert.Zero(t, n)
 
 	// test SetWriteDeadline
-	require.NoError(t, client.SetWriteDeadline(time.Now()))
+	require.NoError(t, client.SetWriteDeadline(time.Now().Add(-time.Hour)))
 	n, err = client.Write(helloPayload)
 	assert.Error(t, err)
 	assert.Equal(t, transport.ErrDeadlineExceeded, err)
