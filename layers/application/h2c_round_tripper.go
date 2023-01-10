@@ -11,7 +11,7 @@ import (
 )
 
 // NewH2CRoundTripper returns an http.RoundTripper for serving and
-// making HTTP requests.
+// making H2C requests.
 func NewH2CRoundTripper(transportLayer transport.Layer) *http2.Transport {
 	return &http2.Transport{
 		AllowHTTP: true,
