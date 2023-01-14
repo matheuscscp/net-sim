@@ -32,6 +32,7 @@ var (
 	ErrProtocolClosed       = errors.New("protocol closed")
 	ErrListenerClosed       = fmt.Errorf("listener closed (os error msg: %s)", useOfClosedConn)
 	ErrDeadlineExceeded     = errors.New("deadline exceeded")
+	ErrConnClosed           = errors.New("connection closed")
 	ErrConnReset            = errors.New("connection reset")
 )
 
