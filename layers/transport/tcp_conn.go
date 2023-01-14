@@ -31,10 +31,10 @@ type (
 
 		nextExpectedSeq uint32
 		readMu          sync.Mutex
-		readCh          chan *gplayers.TCP // non acked segments buffer
+		readCh          chan *gplayers.TCP // data segments buffer
 		readDeadline    *deadline
-		readBuf         []byte            // acked data ready to be returned
-		readCache       map[uint32][]byte // (non acked) cached segments mapped by sequence number
+		readBuf         []byte            // data ready to be returned
+		readSeqCache    map[uint32][]byte // cached data mapped by sequence number
 
 		nextSeq       uint32
 		writeMu       sync.Mutex
@@ -81,7 +81,7 @@ func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handsha
 
 		readCh:       make(chan *gplayers.TCP, channelSize),
 		readDeadline: newDeadline(),
-		readCache:    make(map[uint32][]byte),
+		readSeqCache: make(map[uint32][]byte),
 
 		writeCh:       make(chan uint32, channelSize),
 		writeDeadline: newDeadline(),
@@ -144,6 +144,7 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 
 	// handle end of connection
 	if tcpSegment.FIN {
+		// TODO: set t.connClosed = true and return ErrConnClosed where applicable
 		t.Close()
 		return
 	}
@@ -178,85 +179,119 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 
-	// if some bytes are already available, return them right away but
-	// still check context, deadline and reset errors below
-	n := t.pullFromReadBuf(b)
-
 	// create deadline context
 	var deadlineExceeded bool
 	ctx, cancel := t.readDeadline.withContext(t.ctx, &deadlineExceeded)
 	defer cancel()
-	if deadlineExceeded {
-		return n, ErrDeadlineExceeded
+
+	// check state errors
+	checkStateErrors := func() error {
+		if deadlineExceeded {
+			return ErrDeadlineExceeded
+		}
+		if t.connReset {
+			return ErrConnReset
+		}
+		return nil
 	}
-	if t.connReset {
-		return n, ErrConnReset
+	if err := checkStateErrors(); err != nil {
+		return 0, err
 	}
 	if ctx.Err() != nil {
-		return n, fmt.Errorf("(*tcpConn).ctx done before reading bytes: %w", ctx.Err())
+		return 0, fmt.Errorf("(*tcpConn).ctx done before reading bytes: %w", ctx.Err())
 	}
 
 	// if some bytes are already available, return them right away
-	if n > 0 {
+	if n := t.pullFromReadBuf(b); n > 0 {
 		return n, nil
 	}
 
-	// no bytes available, block waiting for some
+	// if the next expected sequence number is already available in the cache, return the bytes right away
+	if newReadBuf, ok := t.readSeqCache[t.nextExpectedSeq]; ok {
+		delete(t.readSeqCache, t.nextExpectedSeq)
+		t.setReadBuf(newReadBuf)
+		return t.pullFromReadBuf(b), nil
+	}
+
+	// process data segments already available in the read channel before sending an ACK to provoke the peer,
+	// adding the payload of segments whose sequence number do not match the next expected one to the cache
+	processDataSegment := func(dataSegment *gplayers.TCP) bool {
+		// sequence number does not match the next expected sequence number.
+		// this might be a future segment, so just cache it for now. make
+		// room in the cache if necessary
+		if seq := dataSegment.Seq; seq != t.nextExpectedSeq {
+			if len(t.readSeqCache) == tcpMaxReadCacheItems {
+				for k := range t.readSeqCache {
+					delete(t.readSeqCache, k)
+					break
+				}
+			}
+			t.readSeqCache[seq] = dataSegment.Payload
+			return false
+		}
+
+		t.setReadBuf(dataSegment.Payload)
+		return true
+	}
 	ctxDone := ctx.Done()
-	for {
-		// look up cache first
-		var ok bool
-		if t.readBuf, ok = t.readCache[t.nextExpectedSeq]; ok {
-			delete(t.readCache, t.nextExpectedSeq)
-		} else {
-			// wait for an event if cache does not contain the next expected sequence number
-			select {
-			// TODO: send ACK after a while, maybe Write() is stuck waiting for this on the other end
-			case <-ctxDone:
-				if deadlineExceeded {
-					return 0, ErrDeadlineExceeded
-				}
-				if t.connReset {
-					return 0, ErrConnReset
-				}
-				return 0, fmt.Errorf("(*tcpConn).ctx done while waiting for tcp data segment: %w", ctx.Err())
-			case segment := <-t.readCh:
-				if seq := segment.Seq; seq != t.nextExpectedSeq {
-					// sequence number does not match the next expected sequence number.
-					// this might be a future segment, so just cache it for now.
-					// make room in the cache if necessary
-					if len(t.readCache) == tcpMaxReadCacheItems {
-						for k := range t.readCache {
-							delete(t.readCache, k)
-							break
-						}
-					}
-					t.readCache[seq] = segment.Payload
-					continue
-				}
-				// sequence number matches the next expected byte. grab the payload
-				t.readBuf = segment.Payload
+	for done := false; !done; {
+		select {
+		// no more data segments available in the read channel
+		default:
+			done = true
+		// process next data segment
+		case dataSegment := <-t.readCh:
+			if processDataSegment(dataSegment) {
+				return t.pullFromReadBuf(b), nil
+			}
+		// context done
+		case <-ctxDone:
+			if err := checkStateErrors(); err != nil {
+				return 0, err
+			}
+			return 0, fmt.Errorf("(*tcpConn).ctx done while processing available tcp data segments: %w", ctx.Err())
+		}
+	}
+
+	// send ACK segment to provoke peer to send the next data segment that we are expecting
+	sendAck := func() error {
+		if err := t.sendAckSegment(ctx); err != nil {
+			if err := checkStateErrors(); err != nil {
+				return err
+			}
+			if pkgcontext.IsContextError(ctx, err) {
+				return fmt.Errorf("(*tcpConn).ctx done while sending tcp ack segment: %w", err)
+			}
+			return fmt.Errorf("error sending tcp ack segment: %w", err)
+		}
+		return nil
+	}
+	if err := sendAck(); err != nil {
+		return 0, err
+	}
+
+	// block waiting for events
+	for backoffPowerOfTwo := 7; ; backoffPowerOfTwo++ {
+		retransmissionTimeout := time.NewTimer((1 << backoffPowerOfTwo) * time.Millisecond)
+		defer retransmissionTimeout.Stop()
+		select {
+		// retransmission timeout. send another ACK to provoke peer to send the next data segment we are expecting
+		case <-retransmissionTimeout.C:
+			if err := sendAck(); err != nil {
+				return 0, err
+			}
+		// context
+		case <-ctxDone:
+			if err := checkStateErrors(); err != nil {
+				return 0, err
+			}
+			return 0, fmt.Errorf("(*tcpConn).ctx done while waiting for tcp data segment: %w", ctx.Err())
+		// data segment arrived
+		case dataSegment := <-t.readCh:
+			if processDataSegment(dataSegment) {
+				return t.pullFromReadBuf(b), nil
 			}
 		}
-		t.nextExpectedSeq += uint32(len(t.readBuf))
-		n := t.pullFromReadBuf(b)
-
-		// FIXME(pimenta, #68): inefficient use of the network
-		err := t.sendAckSegment(ctx)
-		if err != nil {
-			switch {
-			case deadlineExceeded:
-				err = ErrDeadlineExceeded
-			case t.connReset:
-				err = ErrConnReset
-			case pkgcontext.IsContextError(ctx, err):
-				err = fmt.Errorf("(*tcpConn).ctx done while sending tcp ack segment: %w", err)
-			default:
-				err = fmt.Errorf("error sending tcp ack segment: %w", err)
-			}
-		}
-
-		return n, err
 	}
 }
 
@@ -479,6 +514,11 @@ func (t *tcpConn) closeInternalResourcesAndDeleteConn() bool {
 }
 
 // read helpers
+
+func (t *tcpConn) setReadBuf(newReadBuf []byte) {
+	t.readBuf = newReadBuf
+	t.nextExpectedSeq += uint32(len(newReadBuf))
+}
 
 func (t *tcpConn) pullFromReadBuf(b []byte) int {
 	n := copy(b, t.readBuf)
