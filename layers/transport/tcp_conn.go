@@ -11,6 +11,7 @@ import (
 	"github.com/matheuscscp/net-sim/observability"
 	pkgcontext "github.com/matheuscscp/net-sim/pkg/context"
 	pkgio "github.com/matheuscscp/net-sim/pkg/io"
+	"github.com/sirupsen/logrus"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
@@ -27,6 +28,7 @@ type (
 		remoteAddr   addr
 		handshake    handshake
 		handshakeCtx context.Context
+		connClosed   bool
 		connReset    bool
 
 		nextExpectedSeq uint32
@@ -134,17 +136,24 @@ func (t *tcpConn) waitHandshake() error {
 func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 	tcpSegment := segment.(*gplayers.TCP)
 
-	// forward to handshake as well
+	// forward to handshake first
 	if handshake := t.handshake; handshake != nil {
 		handshake.recv(tcpSegment)
-	}
-	if tcpSegment.SYN { // SYN and SYNACK are handshake-only
+	} else if tcpSegment.SYN { // handshake failed, reset conn
+		if err := t.sendAckrstSegment(t.ctx); err != nil {
+			logrus.
+				WithError(err).
+				WithField("syn_tcp_segment", tcpSegment).
+				Error("error sending tcp ackrst segment")
+		}
+		t.connReset = true
+		t.closeInternalResourcesAndDeleteConn()
 		return
 	}
 
 	// handle end of connection
 	if tcpSegment.FIN {
-		// TODO: set t.connClosed = true and return ErrConnClosed where applicable
+		t.connClosed = true
 		t.Close()
 		return
 	}
@@ -188,6 +197,9 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 	checkStateErrors := func() error {
 		if deadlineExceeded {
 			return ErrDeadlineExceeded
+		}
+		if t.connClosed {
+			return ErrConnClosed
 		}
 		if t.connReset {
 			return ErrConnReset
@@ -314,11 +326,22 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 	ctx, cancel := t.writeDeadline.withContext(t.ctx, &deadlineExceeded)
 	defer cancel()
 	ctxDone := ctx.Done()
-	if deadlineExceeded {
-		return 0, ErrDeadlineExceeded
+
+	// check state errors
+	checkStateErrors := func() error {
+		if deadlineExceeded {
+			return ErrDeadlineExceeded
+		}
+		if t.connClosed {
+			return ErrConnClosed
+		}
+		if t.connReset {
+			return ErrConnReset
+		}
+		return nil
 	}
-	if t.connReset {
-		return 0, ErrConnReset
+	if err := checkStateErrors(); err != nil {
+		return 0, err
 	}
 	if ctx.Err() != nil {
 		return 0, fmt.Errorf("(*tcpConn).ctx done before writing bytes: %w", ctx.Err())
@@ -348,11 +371,9 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 			segment.Seq = t.nextSeq + uint32(nextByte)
 			segment.Payload = b[nextByte:endOfPayload]
 			if err = t.listener.protocol.layer.send(ctx, datagramHeader, segment); err != nil {
-				switch {
-				case deadlineExceeded:
-					err = ErrDeadlineExceeded
-				case t.connReset:
-					err = ErrConnReset
+				switch stateErr := checkStateErrors(); {
+				case stateErr != nil:
+					err = stateErr
 				case pkgcontext.IsContextError(ctx, err):
 					err = fmt.Errorf("(*tcpConn).ctx done while sending tcp data segment: %w", err)
 				default:
@@ -375,11 +396,8 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 				nextByte = int64(ackedBytes)
 			// context
 			case <-ctxDone:
-				if deadlineExceeded {
-					return ErrDeadlineExceeded
-				}
-				if t.connReset {
-					return ErrConnReset
+				if err := checkStateErrors(); err != nil {
+					return err
 				}
 				return fmt.Errorf("(*tcpConn).ctx done while waiting for tcp ack segment: %w", ctx.Err())
 			// ACK segment arrived
