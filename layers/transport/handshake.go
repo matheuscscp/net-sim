@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	rand.Seed(time.Now().UnixMilli())
+	rand.Seed(time.Now().UnixNano())
 }
 
 type (
@@ -77,10 +77,10 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 		// retransmission timeout
 		case <-retransmissionTimeout.C:
 			continue
-		// the server host is up but not listening at the dst port
+		// the server transport layer is up but not listening at the dst port
 		case <-client.serverAckrst:
 			return ErrConnReset
-		// context canceled or deadline exceeded
+		// context
 		case <-ctx.Done():
 			return fmt.Errorf("(*tcpClientHandshake).do(ctx) done while waiting for tcp synack segment: %w", ctx.Err())
 		// SYNACK segment arrived
@@ -96,7 +96,7 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 
 			// store seq and ack in the connection
 			t.nextSeq = clientSeq + 1
-			t.lastAck = serverSynack.seq + 1
+			t.nextExpectedSeq = serverSynack.seq + 1
 
 			// send ACK segment
 			if err := t.sendAckSegment(ctx); err != nil {
@@ -132,7 +132,7 @@ func (server *tcpServerHandshake) do(ctx context.Context, conn conn) error {
 	case <-ctx.Done():
 		return fmt.Errorf("(*tcpServerHandshake).do(ctx) done while consuming tcp syn segment: %w", ctx.Err())
 	case clientSeq := <-server.clientSeq:
-		t.lastAck = clientSeq + 1
+		t.nextExpectedSeq = clientSeq + 1
 	}
 
 	// choose a random initial sequence number and send it on a SYNACK segment
@@ -141,7 +141,7 @@ func (server *tcpServerHandshake) do(ctx context.Context, conn conn) error {
 	segment.SYN = true
 	segment.Seq = serverSeq
 	segment.ACK = true
-	segment.Ack = t.lastAck
+	segment.Ack = t.nextExpectedSeq
 	if err := t.listener.protocol.layer.send(ctx, datagramHeader, segment); err != nil {
 		return fmt.Errorf("error sending tcp synack segment: %w", err)
 	}

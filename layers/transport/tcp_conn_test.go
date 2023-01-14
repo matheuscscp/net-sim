@@ -94,7 +94,9 @@ func TestTCPConn(t *testing.T) {
 	makeReq := func(client *http.Client) {
 		pet := petname.Generate(2, "_")
 		url := fmt.Sprintf("http://127.0.0.1:80?q=%s", pet)
-		resp, err := test.HTTPGet(client, url)
+		req, err := http.NewRequest("GET", url, nil)
+		require.NoError(t, err)
+		resp, err := client.Do(req.WithContext(ctx))
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		b, err := io.ReadAll(resp.Body)
