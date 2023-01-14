@@ -131,15 +131,15 @@ func (p *protocol) decapAndDemux(datagram *gplayers.IPv4) error {
 	// find conn and receive
 	srcPort, srcIPAddress := portFromEndpoint(flow.Src()), gplayers.NewIPEndpoint(datagram.SrcIP)
 	remoteAddr := addr{srcPort, srcIPAddress}
-	if conn := listener.findConnOrCreatePending(remoteAddr, segment); conn != nil {
-		conn.recv(segment)
-	} else {
+	conn := listener.findConnOrCreatePending(remoteAddr, segment)
+	if conn == nil {
 		return &connNotFoundError{
 			segment:    segment,
 			localAddr:  localAddr.String(),
 			remoteAddr: remoteAddr.String(),
 		}
 	}
+	conn.recv(segment)
 
 	return nil
 }

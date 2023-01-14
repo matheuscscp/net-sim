@@ -29,12 +29,12 @@ type (
 		handshakeCtx context.Context
 		connReset    bool
 
-		lastAck      uint32
-		readMu       sync.Mutex
-		readCh       chan *gplayers.TCP // non acked segments buffer
-		readDeadline *deadline
-		readBuf      []byte            // acked data ready to be returned
-		readCache    map[uint32][]byte // (non acked) cached segments mapped by sequence number
+		nextExpectedSeq uint32
+		readMu          sync.Mutex
+		readCh          chan *gplayers.TCP // non acked segments buffer
+		readDeadline    *deadline
+		readBuf         []byte            // acked data ready to be returned
+		readCache       map[uint32][]byte // (non acked) cached segments mapped by sequence number
 
 		nextSeq       uint32
 		writeMu       sync.Mutex
@@ -180,7 +180,7 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 
 	// if some bytes are already available, return them right away but
 	// still check context, deadline and reset errors below
-	n := t.pullReadBuf(b)
+	n := t.pullFromReadBuf(b)
 
 	// create deadline context
 	var deadlineExceeded bool
@@ -206,10 +206,10 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 	for {
 		// look up cache first
 		var ok bool
-		if t.readBuf, ok = t.readCache[t.lastAck]; ok {
-			delete(t.readCache, t.lastAck)
+		if t.readBuf, ok = t.readCache[t.nextExpectedSeq]; ok {
+			delete(t.readCache, t.nextExpectedSeq)
 		} else {
-			// wait for an event if cache does not contain t.ack
+			// wait for an event if cache does not contain the next expected sequence number
 			select {
 			// TODO: send ACK after a while, maybe Write() is stuck waiting for this on the other end
 			case <-ctxDone:
@@ -221,8 +221,8 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 				}
 				return 0, fmt.Errorf("(*tcpConn).ctx done while waiting for tcp data segment: %w", ctx.Err())
 			case segment := <-t.readCh:
-				if seq := segment.Seq; seq != t.lastAck {
-					// sequence number does not match the next expected byte (t.ack).
+				if seq := segment.Seq; seq != t.nextExpectedSeq {
+					// sequence number does not match the next expected sequence number.
 					// this might be a future segment, so just cache it for now.
 					// make room in the cache if necessary
 					if len(t.readCache) == tcpMaxReadCacheItems {
@@ -238,8 +238,8 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 				t.readBuf = segment.Payload
 			}
 		}
-		t.lastAck += uint32(len(t.readBuf))
-		n := t.pullReadBuf(b)
+		t.nextExpectedSeq += uint32(len(t.readBuf))
+		n := t.pullFromReadBuf(b)
 
 		// FIXME(pimenta, #68): inefficient use of the network
 		err := t.sendAckSegment(ctx)
@@ -291,6 +291,8 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 
 	// send loop
 	defer func() { t.nextSeq += uint32(ackedBytes) }()
+	backoffPowerOfTwo := 6
+	resetBackoff := func() { backoffPowerOfTwo -= (backoffPowerOfTwo - 6) >> 1 }
 	for nextByte := int64(0); int64(ackedBytes) < nBytes; {
 		// calculate end of window
 		endOfWindow := int64(ackedBytes) + TCPWindowSize
@@ -329,9 +331,14 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 
 		// wait for events
 		err = func() error {
-			timeout := time.NewTimer(tcpRetransmissionTimeout)
-			defer timeout.Stop()
+			backoffPowerOfTwo++
+			retransmissionTimeout := time.NewTimer((1 << backoffPowerOfTwo) * time.Millisecond)
+			defer retransmissionTimeout.Stop()
 			select {
+			// retransmission timeout. reset window
+			case <-retransmissionTimeout.C:
+				nextByte = int64(ackedBytes)
+			// context
 			case <-ctxDone:
 				if deadlineExceeded {
 					return ErrDeadlineExceeded
@@ -340,8 +347,8 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 					return ErrConnReset
 				}
 				return fmt.Errorf("(*tcpConn).ctx done while waiting for tcp ack segment: %w", ctx.Err())
+			// ACK segment arrived
 			case ack := <-t.writeCh:
-				// handle ack number
 				seq := int64(t.nextSeq) + int64(ackedBytes)
 				delta := int64(ack) - seq
 				if delta < 0 {
@@ -355,13 +362,11 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 					return nil
 				}
 				// process valid positive delta
+				resetBackoff()
 				ackedBytes += int(delta)
 				if int(nextByte) < ackedBytes {
 					nextByte = int64(ackedBytes)
 				}
-			case <-timeout.C:
-				// transmission timeout. reset window
-				nextByte = int64(ackedBytes)
 			}
 			return nil
 		}()
@@ -443,7 +448,7 @@ func (t *tcpConn) newDatagramHeaderAndSegment() (*gplayers.IPv4, *gplayers.TCP) 
 func (t *tcpConn) sendAckSegment(ctx context.Context) error {
 	datagramHeader, segment := t.newDatagramHeaderAndSegment()
 	segment.ACK = true
-	segment.Ack = t.lastAck
+	segment.Ack = t.nextExpectedSeq
 	return t.listener.protocol.layer.send(ctx, datagramHeader, segment)
 }
 
@@ -475,7 +480,7 @@ func (t *tcpConn) closeInternalResourcesAndDeleteConn() bool {
 
 // read helpers
 
-func (t *tcpConn) pullReadBuf(b []byte) int {
+func (t *tcpConn) pullFromReadBuf(b []byte) int {
 	n := copy(b, t.readBuf)
 	t.readBuf = t.readBuf[n:]
 	if len(t.readBuf) == 0 {
