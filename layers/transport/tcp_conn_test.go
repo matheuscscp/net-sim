@@ -40,7 +40,7 @@ func (i *instrumentedTransportLayer) Dial(ctx context.Context, network, remoteAd
 }
 
 func TestTCPConn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	var wg sync.WaitGroup
 	var networkLayer network.Layer
 	var transportLayer *instrumentedTransportLayer
@@ -48,7 +48,7 @@ func TestTCPConn(t *testing.T) {
 
 	defer func() {
 		cancel()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		assert.NoError(t, server.Shutdown(shutdownCtx))
 		wg.Wait()
@@ -90,6 +90,19 @@ func TestTCPConn(t *testing.T) {
 		}
 	}()
 
+	// helper function to make and test a single request to the h2c server
+	makeReq := func(client *http.Client) {
+		pet := petname.Generate(2, "_")
+		url := fmt.Sprintf("http://127.0.0.1:80?q=%s", pet)
+		resp, err := test.HTTPGet(client, url)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		b, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		msg := fmt.Sprintf("working: %s", pet)
+		assert.Equal(t, []byte(msg), b)
+	}
+
 	// make multiple http1 requests in parallel, each one with its own client, hence its own connection
 	var wgReqs sync.WaitGroup
 	defer func() {
@@ -97,19 +110,11 @@ func TestTCPConn(t *testing.T) {
 		assert.Equal(t, 21, transportLayer.dialCnt)
 	}()
 	for i := 0; i < 10; i++ {
-		client := &http.Client{Transport: application.NewHTTPRoundTripper(transportLayer)}
 		wgReqs.Add(1)
 		go func() {
 			defer wgReqs.Done()
-			pet := petname.Generate(2, "_")
-			url := fmt.Sprintf("http://127.0.0.1:80?q=%s", pet)
-			resp, err := client.Get(url)
-			require.NoError(t, err)
-			require.NotNil(t, resp)
-			b, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			msg := fmt.Sprintf("working: %s", pet)
-			assert.Equal(t, []byte(msg), b)
+			client := &http.Client{Transport: application.NewHTTPRoundTripper(transportLayer)}
+			makeReq(client)
 		}()
 	}
 
@@ -119,15 +124,7 @@ func TestTCPConn(t *testing.T) {
 		wgReqs.Add(1)
 		go func() {
 			defer wgReqs.Done()
-			pet := petname.Generate(2, "_")
-			url := fmt.Sprintf("http://127.0.0.1:80?q=%s", pet)
-			resp, err := client.Get(url)
-			require.NoError(t, err)
-			require.NotNil(t, resp)
-			b, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			msg := fmt.Sprintf("working: %s", pet)
-			assert.Equal(t, []byte(msg), b)
+			makeReq(client)
 		}()
 	}
 
@@ -137,21 +134,13 @@ func TestTCPConn(t *testing.T) {
 		wgReqs.Add(1)
 		go func() {
 			defer wgReqs.Done()
-			pet := petname.Generate(2, "_")
-			url := fmt.Sprintf("http://127.0.0.1:80?q=%s", pet)
-			resp, err := client2.Get(url)
-			require.NoError(t, err)
-			require.NotNil(t, resp)
-			b, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			msg := fmt.Sprintf("working: %s", pet)
-			assert.Equal(t, []byte(msg), b)
+			makeReq(client2)
 		}()
 	}
 }
 
 func TestTCPServerNotListening(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
 
