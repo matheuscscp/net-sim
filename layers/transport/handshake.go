@@ -87,16 +87,16 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 		case serverSynack := <-client.serverSynack:
 			// reset connection upon wrong ack number
 			if serverSynack.ack != clientSeq+1 {
-				err := fmt.Errorf("server sent wrong ack number, want %v, got %v. connection will be reset", clientSeq+1, serverSynack.ack)
-				if sendErr := t.sendAckrstSegment(ctx); sendErr != nil {
-					return fmt.Errorf("%w (error sending tcp ackrst segment: %v)", err, sendErr)
+				err := fmt.Errorf("server sent wrong ack number, want %v, got %v. client reset the connection", clientSeq+1, serverSynack.ack)
+				if ackrstErr := t.sendAckrstSegment(ctx); ackrstErr != nil {
+					return fmt.Errorf("%w (error sending tcp ackrst segment: %v)", err, ackrstErr)
 				}
 				return err
 			}
 
 			// store seq and ack in the connection
-			t.seq = clientSeq + 1
-			t.ack = serverSynack.seq + 1
+			t.nextSeq = clientSeq + 1
+			t.lastAck = serverSynack.seq + 1
 
 			// send ACK segment
 			if err := t.sendAckSegment(ctx); err != nil {
@@ -132,7 +132,7 @@ func (server *tcpServerHandshake) do(ctx context.Context, conn conn) error {
 	case <-ctx.Done():
 		return fmt.Errorf("(*tcpServerHandshake).do(ctx) done while consuming tcp syn segment: %w", ctx.Err())
 	case clientSeq := <-server.clientSeq:
-		t.ack = clientSeq + 1
+		t.lastAck = clientSeq + 1
 	}
 
 	// choose a random initial sequence number and send it on a SYNACK segment
@@ -141,21 +141,21 @@ func (server *tcpServerHandshake) do(ctx context.Context, conn conn) error {
 	segment.SYN = true
 	segment.Seq = serverSeq
 	segment.ACK = true
-	segment.Ack = t.ack
+	segment.Ack = t.lastAck
 	if err := t.listener.protocol.layer.send(ctx, datagramHeader, segment); err != nil {
 		return fmt.Errorf("error sending tcp synack segment: %w", err)
 	}
+	t.nextSeq = serverSeq + 1
 
-	// we dont block waiting for the third-way ACK from the client
-	// because it may get lost in the network and the client should
-	// not retry anyway. it's better to consider the handshake done
-	// and unblock the server from sending data to the client, so the
-	// client can have more chances to send ACKs. if a real problem
-	// happened during the handshake on the client side and the
-	// client really did not receive the seq number above, then the
-	// tcp connection logic will detect the problem and reset the
-	// connection anyway, otherwise everything is fine
-	t.seq = serverSeq + 1
+	// we dont block waiting for the third-way ACK that should be sent
+	// by the client because it may get lost in the network and the
+	// client should not retry anyway. it's better to consider the
+	// handshake done and unblock the server from potentially sending
+	// data to the client, so the client can have more chances to send
+	// ACKs. if a real problem happened during the handshake on the
+	// client side and the client really did not receive the seq number
+	// above, then the tcp connection logic will detect the problem and
+	// reset the connection anyway, otherwise everything is fine
 	return nil
 }
 
