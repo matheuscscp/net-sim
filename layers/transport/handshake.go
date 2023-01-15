@@ -61,6 +61,7 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 
 	// choose a fixed random initial sequence number and send it on a retry loop
 	clientSeq := rand.Uint32()
+	t.seedSeq = clientSeq
 	for backoffPowerOfTwo := 0; ; backoffPowerOfTwo++ {
 		// send SYN segment
 		datagramHeader, segment := t.newDatagramHeaderAndSegment()
@@ -137,25 +138,22 @@ func (server *tcpServerHandshake) do(ctx context.Context, conn conn) error {
 
 	// choose a random initial sequence number and send it on a SYNACK segment
 	serverSeq := rand.Uint32()
-	datagramHeader, segment := t.newDatagramHeaderAndSegment()
-	segment.SYN = true
-	segment.Seq = serverSeq
-	segment.ACK = true
-	segment.Ack = t.nextExpectedSeq
-	if err := t.listener.protocol.layer.send(ctx, datagramHeader, segment); err != nil {
+	t.seedSeq = serverSeq
+	if err := t.sendSynackSegment(ctx); err != nil {
 		return fmt.Errorf("error sending tcp synack segment: %w", err)
 	}
 	t.nextSeq = serverSeq + 1
 
 	// we dont block waiting for the third-way ACK that should be sent
-	// by the client because it may get lost in the network and the
-	// client should not retry anyway. it's better to consider the
-	// handshake done and unblock the server from potentially sending
+	// by the client to arrive because it may get lost in the network
+	// and the client should not retry anyway. it's better to consider
+	// the handshake done and unblock the server from potentially sending
 	// data to the client, so the client can have more chances to send
 	// ACKs. if a real problem happened during the handshake on the
 	// client side and the client really did not receive the seq number
-	// above, then the tcp connection logic will detect the problem and
-	// reset the connection anyway, otherwise everything is fine
+	// above, then the client handshake logic will resend the SYN segment
+	// and the connection logic will accept it, if the sequence number is
+	// the same as the one received here, and reply another SYNACK segment
 	return nil
 }
 

@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -22,14 +23,16 @@ import (
 
 type (
 	tcpConn struct {
-		ctx          context.Context
-		cancelCtx    context.CancelFunc
-		listener     *listener
-		remoteAddr   addr
-		handshake    handshake
-		handshakeCtx context.Context
-		connClosed   bool
-		connReset    bool
+		ctx                context.Context
+		cancelCtx          context.CancelFunc
+		listener           *listener
+		remoteAddr         addr
+		handshake          handshake
+		handshakeCtx       context.Context
+		cancelHandshakeCtx context.CancelFunc
+		connClosed         bool
+		connReset          bool
+		isServer           bool
 
 		nextExpectedSeq uint32
 		readMu          sync.Mutex
@@ -38,6 +41,7 @@ type (
 		readBuf         []byte            // data ready to be returned
 		readSeqCache    map[uint32][]byte // cached data mapped by sequence number
 
+		seedSeq       uint32
 		nextSeq       uint32
 		writeMu       sync.Mutex
 		writeCh       chan uint32 // a stream of ack numbers
@@ -69,17 +73,22 @@ var (
 
 func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handshake) conn {
 	ctx, cancel := context.WithCancel(context.Background())
+	handshakeCtx, cancelHandshakeCtx := context.WithCancel(context.Background())
+	_, isServer := handshake.(*tcpServerHandshake)
 	metricLabels := prometheus.Labels{
 		observability.StackName: listener.protocol.layer.networkLayer.StackName(),
 		labelNameLocalAddr:      listener.Addr().String(),
 		labelNameRemoteAddr:     remoteAddr.String(),
 	}
 	return &tcpConn{
-		ctx:        ctx,
-		cancelCtx:  cancel,
-		listener:   listener,
-		remoteAddr: remoteAddr,
-		handshake:  handshake,
+		ctx:                ctx,
+		cancelCtx:          cancel,
+		listener:           listener,
+		remoteAddr:         remoteAddr,
+		handshake:          handshake,
+		handshakeCtx:       handshakeCtx,
+		cancelHandshakeCtx: cancelHandshakeCtx,
+		isServer:           isServer,
 
 		readCh:       make(chan *gplayers.TCP, channelSize),
 		readDeadline: newDeadline(),
@@ -92,45 +101,52 @@ func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handsha
 	}
 }
 
-func (t *tcpConn) setHandshakeContext(ctx context.Context) {
-	t.handshakeCtx = ctx
-}
-
-// handshake must be called after a non-nil handshake context
-// has been set with setHandshakeContext().
-func (t *tcpConn) doHandshake() error {
-	if t.handshake != nil {
-		var tCtxDone bool
-		ctx, cancel := pkgcontext.WithCancelOnAnotherContext(t.handshakeCtx, t.ctx, &tCtxDone)
-		defer cancel()
-		if err := t.handshake.do(ctx, t); err != nil {
-			if pkgcontext.IsContextError(ctx, err) {
-				if tCtxDone {
-					return fmt.Errorf("(*tcpConn).ctx done while doing handshake: %w", err)
-				}
-				return fmt.Errorf("(*tcpConn).handshakeCtx done while doing handshake: %w", err)
-			}
-			return err
-		}
-		t.handshake = nil
+func (t *tcpConn) doHandshake(ctx context.Context) error {
+	if t.handshakeCtx.Err() != nil {
+		return errors.New("(*tcpConn).doHandshake() already ran previously for this connection")
 	}
+	defer t.cancelHandshakeCtx()
+
+	// merge local contexts
+	var tCtxDone bool
+	localCtx, cancelLocalCtx := pkgcontext.WithCancelOnAnotherContext(t.handshakeCtx, t.ctx, &tCtxDone)
+	defer cancelLocalCtx()
+
+	// merge func and local context
+	var localCtxDone bool
+	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, localCtx, &localCtxDone)
+	defer cancel()
+
+	// do handshake
+	if err := t.handshake.do(ctx, t); err != nil {
+		if pkgcontext.IsContextError(ctx, err) {
+			if !localCtxDone {
+				return fmt.Errorf("(*tcpConn).doHandshake(ctx) done while doing handshake: %w", err)
+			}
+			if tCtxDone {
+				return fmt.Errorf("(*tcpConn).ctx done while doing handshake: %w", err)
+			}
+			return fmt.Errorf("(*tcpConn).handshakeCtx done while doing handshake: %w", err)
+		}
+		return err
+	}
+	t.handshake = nil
+
 	return nil
 }
 
 func (t *tcpConn) waitHandshake() error {
+	var err error
+	select {
+	case <-t.handshakeCtx.Done():
+		err = fmt.Errorf("(*tcpConn).handshakeCtx done while waiting for handshake to complete: %w", t.handshakeCtx.Err())
+	case <-t.ctx.Done():
+		err = fmt.Errorf("(*tcpConn).ctx done while waiting for handshake to complete: %w", t.ctx.Err())
+	}
 	if t.handshake == nil {
 		return nil
 	}
-
-	select {
-	case <-t.handshakeCtx.Done():
-		if t.handshake == nil {
-			return nil
-		}
-		return fmt.Errorf("(*tcpConn).handshakeCtx done while waiting for handshake: %w", t.handshakeCtx.Err())
-	case <-t.ctx.Done():
-		return fmt.Errorf("(*tcpConn).ctx done while waiting for handshake: %w", t.ctx.Err())
-	}
+	return err
 }
 
 func (t *tcpConn) recv(segment gopacket.TransportLayer) {
@@ -139,15 +155,18 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 	// forward to handshake first
 	if handshake := t.handshake; handshake != nil {
 		handshake.recv(tcpSegment)
-	} else if tcpSegment.SYN { // handshake failed, reset conn
-		if err := t.sendAckrstSegment(t.ctx); err != nil {
+	} else if t.isServer && tcpSegment.SYN && !tcpSegment.ACK && tcpSegment.Seq == t.nextExpectedSeq-1 {
+		// this is a server and it's possible that the SYNACK segment sent in the handshake
+		// got lost in the network, causing the client to retry the initial SYN segment.
+		// reply SYNACK again
+		if err := t.sendSynackSegment(t.ctx); err != nil {
 			logrus.
 				WithError(err).
 				WithField("syn_tcp_segment", tcpSegment).
-				Error("error sending tcp ackrst segment")
+				WithField("server_seed_seq", t.seedSeq).
+				Error("error sending retry tcp synack segment")
+			t.closeInternalResourcesAndDeleteConn()
 		}
-		t.connReset = true
-		t.closeInternalResourcesAndDeleteConn()
 		return
 	}
 
@@ -509,6 +528,15 @@ func (t *tcpConn) sendAckrstSegment(ctx context.Context) error {
 	datagramHeader, segment := t.newDatagramHeaderAndSegment()
 	segment.ACK = true
 	segment.RST = true
+	return t.listener.protocol.layer.send(ctx, datagramHeader, segment)
+}
+
+func (t *tcpConn) sendSynackSegment(ctx context.Context) error {
+	datagramHeader, segment := t.newDatagramHeaderAndSegment()
+	segment.SYN = true
+	segment.Seq = t.seedSeq
+	segment.ACK = true
+	segment.Ack = t.nextExpectedSeq
 	return t.listener.protocol.layer.send(ctx, datagramHeader, segment)
 }
 

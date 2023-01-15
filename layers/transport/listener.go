@@ -22,11 +22,9 @@ type (
 	}
 
 	listener struct {
-		acceptCtx       context.Context
-		cancelAcceptCtx context.CancelFunc
-		protocol        *protocol
-		port            uint16
-		ipAddress       *gopacket.Endpoint
+		protocol  *protocol
+		port      uint16
+		ipAddress *gopacket.Endpoint
 
 		connsMu, pendingConnsMu sync.RWMutex
 		conns, pendingConns     map[addr]conn
@@ -43,15 +41,12 @@ func newListener(
 	port uint16,
 	ipAddress *gopacket.Endpoint,
 ) *listener {
-	acceptCtx, cancelAcceptCtx := context.WithCancel(context.Background())
 	l := &listener{
-		acceptCtx:       acceptCtx,
-		cancelAcceptCtx: cancelAcceptCtx,
-		protocol:        protocol,
-		port:            port,
-		ipAddress:       ipAddress,
-		conns:           make(map[addr]conn),
-		pendingConns:    make(map[addr]conn),
+		protocol:     protocol,
+		port:         port,
+		ipAddress:    ipAddress,
+		conns:        make(map[addr]conn),
+		pendingConns: make(map[addr]conn),
 	}
 	l.pendingConnsCond = sync.NewCond(&l.pendingConnsMu)
 	return l
@@ -62,6 +57,7 @@ func (l *listener) matchesDstIPAddress(dstIPAddress gopacket.Endpoint) bool {
 }
 
 func (l *listener) Accept() (net.Conn, error) {
+	// wait for conn
 	conn, err := l.waitForPendingConnAndMoveToConns()
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for pending connection: %w", err)
@@ -72,18 +68,17 @@ func (l *listener) Accept() (net.Conn, error) {
 	// a handshake should not block the goroutine calling Accept(),
 	// hence we call it on a new goroutine instead. the same is not
 	// true when Dial()ing
-	ctx, cancel := context.WithTimeout(l.acceptCtx, 5*time.Second)
-	conn.setHandshakeContext(ctx)
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := conn.doHandshake(); err != nil {
+		if err := conn.doHandshake(ctx); err != nil {
 			conn.Close()
 			logger.
 				WithError(err).
 				Error("error doing server handshake. connection was closed")
-		} else {
-			logger.Debug("success doing server handshake")
+			return
 		}
+		logger.Debug("success doing server handshake")
 	}()
 
 	return conn, nil
@@ -162,8 +157,6 @@ func (l *listener) stopListening() error {
 	l.pendingConnsCond.Broadcast()
 	l.pendingConnsMu.Unlock()
 
-	l.cancelAcceptCtx()
-
 	// close pending conns
 	closers := make([]io.Closer, 0, len(pendingConns))
 	for _, conn := range pendingConns {
@@ -181,7 +174,7 @@ func (l *listener) Addr() net.Addr {
 }
 
 func (l *listener) Dial(ctx context.Context, remoteAddr string) (net.Conn, error) {
-	// find conn or create
+	// create conn
 	remotePort, remoteIPAddr, err := parseHostPort(remoteAddr, true /*needIP*/)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing remoteAddr: %w", err)
@@ -194,8 +187,7 @@ func (l *listener) Dial(ctx context.Context, remoteAddr string) (net.Conn, error
 	logger.Debug("Dial(): conn created")
 
 	// handshake
-	conn.setHandshakeContext(ctx)
-	if err := conn.doHandshake(); err != nil {
+	if err := conn.doHandshake(ctx); err != nil {
 		conn.Close()
 		const msg = "error doing client handshake. connection was closed"
 		logger.
@@ -204,6 +196,7 @@ func (l *listener) Dial(ctx context.Context, remoteAddr string) (net.Conn, error
 		return nil, fmt.Errorf("%s: %w", msg, err)
 	}
 	logger.Debug("success doing client handshake")
+
 	return conn, nil
 }
 
