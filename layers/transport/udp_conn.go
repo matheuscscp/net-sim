@@ -40,11 +40,7 @@ func (udpFactory) newConn(listener *listener, remoteAddr addr, _ handshake) conn
 	}
 }
 
-func (u *udpConn) setHandshakeContext(ctx context.Context) {
-	// no-op
-}
-
-func (u *udpConn) doHandshake() error {
+func (u *udpConn) doHandshake(ctx context.Context) error {
 	return nil // no-op
 }
 

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -74,8 +75,18 @@ func TestTCPConn(t *testing.T) {
 	require.NotNil(t, serverListener)
 	server = &http.Server{
 		Handler: h2c.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
+			if len(b) == 0 {
+				resp := []byte(http.StatusText(http.StatusBadRequest))
+				w.WriteHeader(http.StatusBadRequest)
+				n, err := w.Write(resp)
+				assert.Equal(t, len(resp), n)
+				assert.NoError(t, err)
+				return
+			}
 			time.Sleep(time.Duration(rand.Intn(5)) * 10 * time.Millisecond)
-			msg := fmt.Sprintf("working: %s", r.URL.Query().Get("q"))
+			msg := fmt.Sprintf("working: %s", string(b))
 			n, err := w.Write([]byte(msg))
 			assert.Equal(t, len(msg), n)
 			assert.NoError(t, err)
@@ -91,18 +102,19 @@ func TestTCPConn(t *testing.T) {
 	}()
 
 	// helper function to make and test a single request to the h2c server
-	makeReq := func(client *http.Client) {
-		pet := petname.Generate(2, "_")
-		url := fmt.Sprintf("http://127.0.0.1:80?q=%s", pet)
-		req, err := http.NewRequest("GET", url, nil)
+	makeReqWithData := func(client *http.Client, data string) {
+		req, err := http.NewRequest("POST", "http://127.0.0.1:80", strings.NewReader(data))
 		require.NoError(t, err)
 		resp, err := client.Do(req.WithContext(ctx))
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		b, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
-		msg := fmt.Sprintf("working: %s", pet)
+		msg := fmt.Sprintf("working: %s", data)
 		assert.Equal(t, []byte(msg), b)
+	}
+	makeReq := func(client *http.Client) {
+		makeReqWithData(client, petname.Generate(2, "_"))
 	}
 
 	// make multiple http1 requests in parallel, each one with its own client, hence its own connection
@@ -139,6 +151,15 @@ func TestTCPConn(t *testing.T) {
 			makeReq(client2)
 		}()
 	}
+
+	// make large request
+	largeData := petname.Generate(2, "_")
+	largeData += ", " + petname.Generate(2, "_")
+	largeData += ", " + petname.Generate(2, "_")
+	for len(largeData) < 10000000 { // 10 MB
+		largeData += ", " + largeData
+	}
+	makeReqWithData(client2, largeData)
 }
 
 func TestTCPServerNotListening(t *testing.T) {
