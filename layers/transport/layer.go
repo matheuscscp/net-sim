@@ -92,7 +92,6 @@ type (
 // stop and wait for this thread.
 func NewLayer(networkLayer network.Layer) Layer {
 	ctx, cancel := context.WithCancel(context.Background())
-
 	l := &layer{
 		networkLayer: networkLayer,
 		cancelCtx:    cancel,
@@ -101,18 +100,9 @@ func NewLayer(networkLayer network.Layer) Layer {
 	l.tcp = newProtocol(l, tcpFactory{})
 	l.udp = newProtocol(l, udpFactory{})
 
-	// create thread for listening to IP datagrams and push them
-	// into the giant buffer
-	l.wg.Add(1)
-	go func() {
-		defer l.wg.Done()
-		networkLayer.Listen(ctx, func(datagram *gplayers.IPv4) {
-			select {
-			case l.giantBuf <- datagram:
-			default:
-			}
-		})
-	}()
+	// register protocol handlers
+	networkLayer.RegisterProtocol(l.tcp)
+	networkLayer.RegisterProtocol(l.udp)
 
 	// create threads for draining the giant datagram buffer and demux
 	// each datagram into the right place (some port/conn buffer, or
@@ -204,7 +194,7 @@ func NewLayer(networkLayer network.Layer) Layer {
 						logrus.
 							WithError(err).
 							WithField("datagram", datagram).
-							Error("error in transport.(*layer).decapAndDemux()")
+							Error("error in transport.(*protocol).decapAndDemux()")
 					}
 				}
 			}
@@ -212,6 +202,13 @@ func NewLayer(networkLayer network.Layer) Layer {
 	}
 
 	return l
+}
+
+func (l *layer) recv(datagram *gplayers.IPv4) {
+	select {
+	case l.giantBuf <- datagram:
+	default:
+	}
 }
 
 func (l *layer) Listen(ctx context.Context, network, localAddr string) (net.Listener, error) {
@@ -253,9 +250,7 @@ func (l *layer) Close() error {
 	cancel()
 	l.wg.Wait()
 
-	// close channels
-	close(l.giantBuf)
-
+	// close protocols
 	return pkgio.Close(l.tcp, l.udp)
 }
 

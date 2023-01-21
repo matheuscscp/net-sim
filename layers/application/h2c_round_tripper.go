@@ -10,8 +10,7 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// NewH2CRoundTripper returns an http.RoundTripper for serving and
-// making H2C requests.
+// NewH2CRoundTripper returns an http.RoundTripper for making H2C requests.
 func NewH2CRoundTripper(transportLayer transport.Layer) *http2.Transport {
 	return &http2.Transport{
 		AllowHTTP: true,

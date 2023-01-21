@@ -35,12 +35,8 @@ type (
 	// of one of the interfaces, otherwise an error will be returned.
 	//
 	// A consumer of IP datagrams (like the transport layer) may
-	// consume by accessing the Recv() channel of the interfaces
-	// directly, or via the Listen() method (which spwans one
-	// thread for each interface/channel and finishes them when
-	// the given ctx is cancelled), but not both simultaneously.
-	// The Listen() method may be sequentially called multiple
-	// times for any given Layer instance.
+	// consume by registering protocol handlers (see the IPProtocol
+	// interface).
 	Layer interface {
 		Send(ctx context.Context, datagram *gplayers.IPv4) error
 		FindInterfaceForHeader(datagramHeader *gplayers.IPv4) (Interface, error)
@@ -48,20 +44,9 @@ type (
 		ForwardingTable() *ForwardingTable
 		Interfaces() []Interface
 		Interface(name string) Interface
-		// Listen blocks listening for datagrams in all interfaces
-		// and forwards them to the given listener function. It
-		// returns when the given ctx is cancelled.
-		//
-		// The listener will be invoked from multiple threads, so
-		// the underlying code must be thread-safe (this is a
-		// performance optimization decision).
-		//
-		// The Recv() channels of the interfaces should not be consumed
-		// elsewhere while Listen()ing, otherwise the listener function
-		// will miss those datagrams. For the same reason, Listen is not
-		// thread-safe, but it may safely be called multiple times
-		// sequentially.
-		Listen(ctx context.Context, listener func(datagram *gplayers.IPv4))
+		RegisterProtocol(protocol IPProtocol)
+		DeregisterProtocol(protocolID gplayers.IPProtocol) bool
+		GetRegisteredProtocol(protocolID gplayers.IPProtocol) (IPProtocol, bool)
 		Close() error
 		StackName() string
 	}
@@ -79,14 +64,27 @@ type (
 		DefaultRouteInterface string            `yaml:"defaultRouteInterface"`
 	}
 
+	// IPProtocol represents a protocol that uses the Internet Protocol for
+	// its transport, e.g. TCP and UDP.
+	IPProtocol interface {
+		GetID() gplayers.IPProtocol
+		// Recv is the method for a registered IPProtocol to consume datagrams
+		// that were received by the network layer. For performance reasons,
+		// it will be invoked from multiple threads, hence the implementation
+		// must be thread-safe.
+		Recv(datagram *gplayers.IPv4)
+	}
+
 	layer struct {
-		ctx             context.Context
 		cancelCtx       context.CancelFunc
+		wg              sync.WaitGroup
 		conf            *LayerConfig
 		intfs           []Interface
 		intfMap         map[string]Interface
-		ipMap           map[gopacket.Endpoint]Interface
+		intfIPMap       map[gopacket.Endpoint]Interface
 		forwardingTable *ForwardingTable
+		protocols       map[gplayers.IPProtocol]IPProtocol
+		protocolsMu     sync.RWMutex
 	}
 
 	loopbackIntf struct {
@@ -105,13 +103,13 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 	// prepare for creating interfaces
 	intfs := make([]Interface, 0, len(conf.Interfaces))
 	intfMap := make(map[string]Interface)
-	ipMap := make(map[gopacket.Endpoint]Interface)
+	intfIPMap := make(map[gopacket.Endpoint]Interface)
 	addIntf := func(intf Interface) {
 		intfs = append(intfs, intf)
 		intfMap[intf.Name()] = intf
-		ipMap[intf.IPAddress()] = intf
+		intfIPMap[intf.IPAddress()] = intf
 	}
-	overlapIntf := func(intf Interface) error {
+	checkIntfOverlapping := func(intf Interface) error {
 		intfNet := intf.Network()
 		for _, overlap := range intfs {
 			overlapNet := overlap.Network()
@@ -133,14 +131,14 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 			intfConf.MetricLabels.StackName = conf.MetricLabels.StackName
 		}
 		intf, err := NewInterface(ctx, intfConf)
-		if err != nil || overlapIntf(intf) != nil {
+		if err != nil || checkIntfOverlapping(intf) != nil {
 			for j := i - 1; 0 <= j; j-- {
 				intfs[j].Close()
 			}
 			if err != nil {
 				return nil, fmt.Errorf("error creating network interface %d: %w", i, err)
 			}
-			return nil, overlapIntf(intf)
+			return nil, checkIntfOverlapping(intf)
 		}
 		addIntf(intf)
 	}
@@ -157,16 +155,18 @@ func NewLayer(ctx context.Context, conf LayerConfig) (Layer, error) {
 		forwardingTable.StoreRoute(Internet(), intf)
 	}
 
-	layerCtx, cancel := context.WithCancel(context.Background())
-	return &layer{
-		ctx:             layerCtx,
+	ctx, cancel := context.WithCancel(context.Background())
+	l := &layer{
 		cancelCtx:       cancel,
 		conf:            &conf,
 		intfs:           intfs,
 		intfMap:         intfMap,
-		ipMap:           ipMap,
+		intfIPMap:       intfIPMap,
 		forwardingTable: forwardingTable,
-	}, nil
+		protocols:       map[gplayers.IPProtocol]IPProtocol{},
+	}
+	l.listen(ctx)
+	return l, nil
 }
 
 func (l *layer) Send(ctx context.Context, datagram *gplayers.IPv4) error {
@@ -184,7 +184,7 @@ func (l *layer) FindInterfaceForHeader(datagramHeader *gplayers.IPv4) (Interface
 
 	// find interface matching datagramHeader.SrcIP
 	srcIPAddress := gplayers.NewIPEndpoint(datagramHeader.SrcIP)
-	intf, ok := l.ipMap[srcIPAddress]
+	intf, ok := l.intfIPMap[srcIPAddress]
 	if !ok {
 		return nil, fmt.Errorf("specified src IP address does not match any of the network interfaces: %s", datagramHeader.SrcIP)
 	}
@@ -221,14 +221,12 @@ func (l *layer) Interface(name string) Interface {
 	return l.intfMap[name]
 }
 
-func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv4)) {
-	var lCtxDone bool
-	ctx, cancel := pkgcontext.WithCancelOnAnotherContext(ctx, l.ctx, &lCtxDone)
-	defer cancel()
-
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
+// listen starts one thread for each interface to consume the intf.Recv() channel
+// and either forward the datagrams in case the layer is running in the forwarding
+// mode, or invoke registered IPProtocol handlers matching the datagram when the
+// dst IP address matches the IP address of the receiving interface (or the subnet
+// broadcast IP address).
+func (l *layer) listen(ctx context.Context) {
 	ctxDone := ctx.Done()
 	for _, intf := range l.intfs {
 		// make local copy so the i-th thread captures
@@ -236,18 +234,20 @@ func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv
 		intf := intf
 
 		// start intf thread
-		wg.Add(1)
+		l.wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer l.wg.Done()
 			for {
 				select {
 				case <-ctxDone:
 					return
 				case datagram := <-intf.Recv():
-					// deliver to transport layer
+					// deliver to protocol
 					dstIPAddress := gplayers.NewIPEndpoint(datagram.DstIP)
 					if dstIPAddress == intf.IPAddress() || dstIPAddress == intf.BroadcastIPAddress() {
-						listener(datagram)
+						if protocol, ok := l.GetRegisteredProtocol(datagram.Protocol); ok {
+							protocol.Recv(datagram)
+						}
 						continue
 					}
 
@@ -256,16 +256,12 @@ func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv
 					// running in forwarding mode. forward the datagram
 					dstIntf, err := l.findInterfaceForDstIPAddress(datagram.DstIP)
 					if err == nil {
-						err = dstIntf.Send(ctx, datagram)
-						if err == nil {
-							continue
-						}
-						if pkgcontext.IsContextError(ctx, err) {
-							if lCtxDone {
-								err = fmt.Errorf("(*layer).ctx done while forwarding ip datagram: %w", err)
-							} else {
-								err = fmt.Errorf("(*layer).Listen(ctx) done while forwarding ip datagram: %w", err)
+						if sendErr := dstIntf.Send(ctx, datagram); sendErr != nil {
+							if pkgcontext.IsContextError(ctx, sendErr) {
+								// network layer was closed, error can be ignored safely
+								continue
 							}
+							err = fmt.Errorf("error sending datagram through dst interface: %w", sendErr)
 						}
 					}
 					if err != nil && !errors.Is(err, errNoL3Route) {
@@ -281,14 +277,36 @@ func (l *layer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv
 	}
 }
 
+func (l *layer) RegisterProtocol(protocol IPProtocol) {
+	l.protocolsMu.Lock()
+	l.protocols[protocol.GetID()] = protocol
+	l.protocolsMu.Unlock()
+}
+
+func (l *layer) DeregisterProtocol(protocolID gplayers.IPProtocol) bool {
+	l.protocolsMu.Lock()
+	_, ok := l.protocols[protocolID]
+	delete(l.protocols, protocolID)
+	l.protocolsMu.Unlock()
+	return ok
+}
+
+func (l *layer) GetRegisteredProtocol(protocolID gplayers.IPProtocol) (IPProtocol, bool) {
+	l.protocolsMu.RLock()
+	protocol, ok := l.protocols[protocolID]
+	l.protocolsMu.RUnlock()
+	return protocol, ok
+}
+
 func (l *layer) Close() error {
-	// cancel ctx
+	// cancel ctx and wait threads
 	var cancel context.CancelFunc
 	cancel, l.cancelCtx = l.cancelCtx, nil
 	if cancel == nil {
 		return nil
 	}
 	cancel()
+	l.wg.Wait()
 
 	// close interfaces
 	closers := make([]io.Closer, len(l.intfs))

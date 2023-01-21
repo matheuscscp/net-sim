@@ -24,8 +24,6 @@ func TestUDPClientServer(t *testing.T) {
 	defer func() {
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
-		close(recvdDatagrams)
-		close(sentSegments)
 	}()
 
 	server, err := transportLayer.Listen(context.Background(), transport.UDP, ":123")
@@ -148,8 +146,6 @@ func TestUDPLocalServer(t *testing.T) {
 	defer func() {
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
-		close(recvdDatagrams)
-		close(sentSegments)
 	}()
 
 	// specifying the loopback IP address makes the server "local"

@@ -23,6 +23,7 @@ type (
 	}
 
 	protocolFactory interface {
+		getID() gplayers.IPProtocol
 		newClientHandshake() handshake
 		newServerHandshake() handshake
 		newConn(listener *listener, remoteAddr addr, handshake handshake) conn
@@ -169,4 +170,20 @@ func (p *protocol) Close() error {
 		closers = append(closers, l)
 	}
 	return pkgio.Close(closers...)
+}
+
+func (p *protocol) GetID() gplayers.IPProtocol {
+	return p.factory.getID()
+}
+
+func (p *protocol) Recv(datagram *gplayers.IPv4) {
+	p.layer.recv(datagram)
+}
+
+func (tcpFactory) getID() gplayers.IPProtocol {
+	return gplayers.IPProtocolTCP
+}
+
+func (udpFactory) getID() gplayers.IPProtocol {
+	return gplayers.IPProtocolUDP
 }

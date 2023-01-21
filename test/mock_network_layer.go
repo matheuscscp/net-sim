@@ -4,22 +4,26 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/matheuscscp/net-sim/layers/link"
 	"github.com/matheuscscp/net-sim/layers/network"
 	"github.com/matheuscscp/net-sim/layers/transport"
-	"github.com/stretchr/testify/require"
 
 	"github.com/google/gopacket"
 	gplayers "github.com/google/gopacket/layers"
+	"github.com/stretchr/testify/require"
 )
 
 type (
 	mockNetworkLayer struct {
 		t              *testing.T
+		cancelCtx      context.CancelFunc
+		wg             sync.WaitGroup
 		intf           *mockNetworkInterface
 		recvdDatagrams <-chan *gplayers.IPv4
+		protocols      map[gplayers.IPProtocol]network.IPProtocol
 	}
 
 	mockNetworkInterface struct {
@@ -29,14 +33,37 @@ type (
 )
 
 // NewMockNetworkLayer creates a mock network.Layer that simply
-// relays datagrams received on the recvDatagrams channel to
+// relays datagrams received on the recvdDatagrams channel to
 // the listener.
 func NewMockNetworkLayer(
 	t *testing.T,
 	sentSegments chan<- gopacket.TransportLayer,
 	recvdDatagrams <-chan *gplayers.IPv4,
 ) network.Layer {
-	return &mockNetworkLayer{t, &mockNetworkInterface{t, sentSegments}, recvdDatagrams}
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &mockNetworkLayer{
+		t:              t,
+		cancelCtx:      cancel,
+		intf:           &mockNetworkInterface{t, sentSegments},
+		recvdDatagrams: recvdDatagrams,
+		protocols:      map[gplayers.IPProtocol]network.IPProtocol{},
+	}
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		ctxDone := ctx.Done()
+		for {
+			select {
+			case <-ctxDone:
+				return
+			case datagram := <-m.recvdDatagrams:
+				if protocol, ok := m.GetRegisteredProtocol(datagram.Protocol); ok {
+					protocol.Recv(datagram)
+				}
+			}
+		}
+	}()
+	return m
 }
 
 func (m *mockNetworkLayer) Send(ctx context.Context, datagram *gplayers.IPv4) error {
@@ -63,19 +90,24 @@ func (m *mockNetworkLayer) Interface(name string) network.Interface {
 	return m.intf
 }
 
-func (m *mockNetworkLayer) Listen(ctx context.Context, listener func(datagram *gplayers.IPv4)) {
-	ctxDone := ctx.Done()
-	for {
-		select {
-		case <-ctxDone:
-			return
-		case datagram := <-m.recvdDatagrams:
-			listener(datagram)
-		}
-	}
+func (m *mockNetworkLayer) RegisterProtocol(protocol network.IPProtocol) {
+	m.protocols[protocol.GetID()] = protocol
+}
+
+func (m *mockNetworkLayer) DeregisterProtocol(protocolID gplayers.IPProtocol) bool {
+	_, ok := m.protocols[protocolID]
+	delete(m.protocols, protocolID)
+	return ok
+}
+
+func (m *mockNetworkLayer) GetRegisteredProtocol(protocolID gplayers.IPProtocol) (network.IPProtocol, bool) {
+	protocol, ok := m.protocols[protocolID]
+	return protocol, ok
 }
 
 func (m *mockNetworkLayer) Close() error {
+	m.cancelCtx()
+	m.wg.Wait()
 	return nil
 }
 
