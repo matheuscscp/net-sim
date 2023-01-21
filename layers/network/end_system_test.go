@@ -3,7 +3,6 @@ package network_test
 import (
 	"context"
 	"net"
-	"sync"
 	"testing"
 
 	"github.com/matheuscscp/net-sim/layers/link"
@@ -54,32 +53,23 @@ var (
 
 func TestEndSystem(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
 	var endSystem network.Layer
 	var gateway network.Interface
-	datagramsTargetedToTransportLayer := make(chan *gplayers.IPv4, 1024)
+	mockIPProtocol := test.NewMockIPProtocol()
 
 	defer func() {
 		cancel()
-		wg.Wait()
 		assert.NoError(t, endSystem.Close())
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, endSystem.Interfaces()...)
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, gateway)
-		close(datagramsTargetedToTransportLayer)
-		test.FlagErrorForUnexpectedDatagrams(t, datagramsTargetedToTransportLayer)
+		mockIPProtocol.Close(t)
 	}()
 
 	// start end system
 	endSystem, err := network.NewLayer(ctx, endSystemConfig)
 	require.NoError(t, err)
 	require.NotNil(t, endSystem)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		endSystem.Listen(ctx, func(datagram *gplayers.IPv4) {
-			datagramsTargetedToTransportLayer <- datagram
-		})
-	}()
+	endSystem.RegisterProtocol(mockIPProtocol)
 	lo := endSystem.Interface("lo")
 	eth0 := endSystem.Interface("eth0")
 
@@ -99,7 +89,7 @@ func TestEndSystem(t *testing.T) {
 	}))
 	test.AssertDatagram(
 		t,
-		datagramsTargetedToTransportLayer,
+		mockIPProtocol.DatagramsRecvd,
 		lo.IPAddress().Raw(), // src
 		lo.IPAddress().Raw(), // dst
 		helloPayload,
@@ -133,7 +123,7 @@ func TestEndSystem(t *testing.T) {
 	}))
 	test.AssertDatagram(
 		t,
-		datagramsTargetedToTransportLayer,
+		mockIPProtocol.DatagramsRecvd,
 		gateway.IPAddress().Raw(),          // src
 		gateway.BroadcastIPAddress().Raw(), // dst
 		helloPayload,

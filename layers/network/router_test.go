@@ -3,7 +3,6 @@ package network_test
 import (
 	"context"
 	"net"
-	"sync"
 	"testing"
 
 	"github.com/matheuscscp/net-sim/layers/link"
@@ -78,19 +77,16 @@ var (
 
 func TestRouter(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
 	var router network.Layer
 	routerPeers := make([]network.Interface, len(routerPeersConfig))
-	datagramsTargetedToTransportLayer := make(chan *gplayers.IPv4, 1024)
+	mockIPProtocol := test.NewMockIPProtocol()
 
 	defer func() {
 		cancel()
-		wg.Wait()
 		assert.NoError(t, router.Close())
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, router.Interfaces()...)
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, routerPeers...)
-		close(datagramsTargetedToTransportLayer)
-		test.FlagErrorForUnexpectedDatagrams(t, datagramsTargetedToTransportLayer)
+		mockIPProtocol.Close(t)
 	}()
 
 	// start router
@@ -99,13 +95,7 @@ func TestRouter(t *testing.T) {
 		Interfaces:     routerConfig,
 	})
 	require.NoError(t, err)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		router.Listen(ctx, func(datagram *gplayers.IPv4) {
-			datagramsTargetedToTransportLayer <- datagram
-		})
-	}()
+	router.RegisterProtocol(mockIPProtocol)
 
 	// start router peers
 	for i, intfConf := range routerPeersConfig {

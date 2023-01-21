@@ -14,6 +14,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type (
+	MockIPProtocol struct {
+		DatagramsRecvd chan *gplayers.IPv4
+	}
+)
+
+func NewMockIPProtocol() *MockIPProtocol {
+	return &MockIPProtocol{
+		DatagramsRecvd: make(chan *gplayers.IPv4, 1024),
+	}
+}
+
+func (m *MockIPProtocol) Close(t *testing.T) {
+	close(m.DatagramsRecvd)
+	FlagErrorForUnexpectedDatagrams(t, m.DatagramsRecvd)
+}
+
+func (m *MockIPProtocol) GetID() gplayers.IPProtocol {
+	return 0
+}
+
+func (m *MockIPProtocol) Recv(datagram *gplayers.IPv4) {
+	m.DatagramsRecvd <- datagram
+}
+
 func AssertDatagram(
 	t *testing.T,
 	ch <-chan *gplayers.IPv4,
