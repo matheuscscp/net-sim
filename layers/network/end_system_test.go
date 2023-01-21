@@ -55,21 +55,21 @@ func TestEndSystem(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var endSystem network.Layer
 	var gateway network.Interface
-	mockIPProtocol := test.NewMockIPProtocol()
+	ipProtocol := test.NewTestIPProtocol()
 
 	defer func() {
 		cancel()
 		assert.NoError(t, endSystem.Close())
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, endSystem.Interfaces()...)
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, gateway)
-		mockIPProtocol.Close(t)
+		ipProtocol.Close(t)
 	}()
 
 	// start end system
 	endSystem, err := network.NewLayer(ctx, endSystemConfig)
 	require.NoError(t, err)
 	require.NotNil(t, endSystem)
-	endSystem.RegisterProtocol(mockIPProtocol)
+	endSystem.RegisterIPProtocol(ipProtocol)
 	lo := endSystem.Interface("lo")
 	eth0 := endSystem.Interface("eth0")
 
@@ -89,7 +89,7 @@ func TestEndSystem(t *testing.T) {
 	}))
 	test.AssertDatagram(
 		t,
-		mockIPProtocol.DatagramsRecvd,
+		ipProtocol.DatagramsRecvd,
 		lo.IPAddress().Raw(), // src
 		lo.IPAddress().Raw(), // dst
 		helloPayload,
@@ -123,7 +123,7 @@ func TestEndSystem(t *testing.T) {
 	}))
 	test.AssertDatagram(
 		t,
-		mockIPProtocol.DatagramsRecvd,
+		ipProtocol.DatagramsRecvd,
 		gateway.IPAddress().Raw(),          // src
 		gateway.BroadcastIPAddress().Raw(), // dst
 		helloPayload,

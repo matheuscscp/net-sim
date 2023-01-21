@@ -79,14 +79,14 @@ func TestRouter(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var router network.Layer
 	routerPeers := make([]network.Interface, len(routerPeersConfig))
-	mockIPProtocol := test.NewMockIPProtocol()
+	ipProtocol := test.NewTestIPProtocol()
 
 	defer func() {
 		cancel()
 		assert.NoError(t, router.Close())
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, router.Interfaces()...)
 		test.CloseIntfsAndFlagErrorForUnexpectedData(t, routerPeers...)
-		mockIPProtocol.Close(t)
+		ipProtocol.Close(t)
 	}()
 
 	// start router
@@ -95,7 +95,7 @@ func TestRouter(t *testing.T) {
 		Interfaces:     routerConfig,
 	})
 	require.NoError(t, err)
-	router.RegisterProtocol(mockIPProtocol)
+	router.RegisterIPProtocol(ipProtocol)
 
 	// start router peers
 	for i, intfConf := range routerPeersConfig {

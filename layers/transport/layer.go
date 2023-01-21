@@ -101,8 +101,8 @@ func NewLayer(networkLayer network.Layer) Layer {
 	l.udp = newProtocol(l, udpFactory{})
 
 	// register protocol handlers
-	networkLayer.RegisterProtocol(l.tcp)
-	networkLayer.RegisterProtocol(l.udp)
+	networkLayer.RegisterIPProtocol(l.tcp)
+	networkLayer.RegisterIPProtocol(l.udp)
 
 	// create threads for draining the giant datagram buffer and demux
 	// each datagram into the right place (some port/conn buffer, or

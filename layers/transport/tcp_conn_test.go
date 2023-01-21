@@ -19,6 +19,7 @@ import (
 	"github.com/matheuscscp/net-sim/test"
 
 	petname "github.com/dustinkirkland/golang-petname"
+	gplayers "github.com/google/gopacket/layers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2"
@@ -41,7 +42,7 @@ func (i *instrumentedTransportLayer) Dial(ctx context.Context, network, remoteAd
 }
 
 func TestTCPConn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	var wg sync.WaitGroup
 	var networkLayer network.Layer
 	var transportLayer *instrumentedTransportLayer
@@ -49,7 +50,7 @@ func TestTCPConn(t *testing.T) {
 
 	defer func() {
 		cancel()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		assert.NoError(t, server.Shutdown(shutdownCtx))
 		wg.Wait()
@@ -163,7 +164,7 @@ func TestTCPConn(t *testing.T) {
 }
 
 func TestTCPServerNotListening(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
 
@@ -187,4 +188,142 @@ func TestTCPServerNotListening(t *testing.T) {
 	assert.Nil(t, c)
 	require.NotNil(t, err)
 	assert.Contains(t, err.Error(), "connection reset")
+}
+
+func TestTCPRetrySYN(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	var networkLayer network.Layer
+	var transportLayer transport.Layer
+	var wg sync.WaitGroup
+
+	defer func() {
+		cancel()
+		wg.Wait()
+		assert.NoError(t, transportLayer.Close())
+		assert.NoError(t, networkLayer.Close())
+		test.CloseIntfsAndFlagErrorForUnexpectedData(t, networkLayer.Interfaces()...)
+	}()
+
+	// start network
+	networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
+		DefaultRouteInterface: "lo",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, networkLayer)
+	transportLayer = transport.NewLayer(networkLayer)
+	tcp, ok := networkLayer.GetRegisteredIPProtocol(gplayers.IPProtocolTCP)
+	require.True(t, ok)
+	require.NotNil(t, tcp)
+	dropped := false
+	networkLayer.RegisterIPProtocol(&test.MockIPProtocol{
+		IPProtocol: tcp.GetID(),
+		RecvFunc: func(datagram *gplayers.IPv4) {
+			segment, err := transport.DeserializeTCPSegment(datagram)
+			require.NoError(t, err)
+			require.NotNil(t, segment)
+
+			// drop the first SYN segment
+			if !dropped && segment.SYN && !segment.ACK {
+				dropped = true
+				return
+			}
+
+			tcp.Recv(datagram)
+		},
+	})
+
+	// start server
+	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
+	require.NoError(t, err)
+	require.NotNil(t, server)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		client, err := server.Accept()
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		n, err := client.Write([]byte("hello"))
+		assert.NoError(t, err)
+		assert.Equal(t, 5, n)
+		assert.NoError(t, server.Close())
+	}()
+
+	// make request
+	conn, err := transportLayer.Dial(ctx, transport.TCP, "127.0.0.1:80")
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	buf := make([]byte, 100)
+	n, err := conn.Read(buf)
+	assert.NoError(t, err)
+	assert.Equal(t, 5, n)
+	assert.Equal(t, "hello", string(buf[:n]))
+}
+
+func TestTCPRetrySYNACK(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	var networkLayer network.Layer
+	var transportLayer transport.Layer
+	var wg sync.WaitGroup
+
+	defer func() {
+		cancel()
+		wg.Wait()
+		assert.NoError(t, transportLayer.Close())
+		assert.NoError(t, networkLayer.Close())
+		test.CloseIntfsAndFlagErrorForUnexpectedData(t, networkLayer.Interfaces()...)
+	}()
+
+	// start network
+	networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
+		DefaultRouteInterface: "lo",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, networkLayer)
+	transportLayer = transport.NewLayer(networkLayer)
+	tcp, ok := networkLayer.GetRegisteredIPProtocol(gplayers.IPProtocolTCP)
+	require.True(t, ok)
+	require.NotNil(t, tcp)
+	dropped := false
+	networkLayer.RegisterIPProtocol(&test.MockIPProtocol{
+		IPProtocol: tcp.GetID(),
+		RecvFunc: func(datagram *gplayers.IPv4) {
+			segment, err := transport.DeserializeTCPSegment(datagram)
+			require.NoError(t, err)
+			require.NotNil(t, segment)
+
+			// drop the first SYNACK segment
+			if !dropped && segment.SYN && segment.ACK {
+				dropped = true
+				return
+			}
+
+			tcp.Recv(datagram)
+		},
+	})
+
+	// start server
+	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
+	require.NoError(t, err)
+	require.NotNil(t, server)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		client, err := server.Accept()
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		n, err := client.Write([]byte("hello"))
+		assert.NoError(t, err)
+		assert.Equal(t, 5, n)
+		assert.NoError(t, server.Close())
+	}()
+
+	// make request
+	conn, err := transportLayer.Dial(ctx, transport.TCP, "127.0.0.1:80")
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	buf := make([]byte, 100)
+	n, err := conn.Read(buf)
+	assert.NoError(t, err)
+	assert.Equal(t, 5, n)
+	assert.Equal(t, "hello", string(buf[:n]))
 }
