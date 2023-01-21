@@ -57,7 +57,7 @@ func NewMockNetworkLayer(
 			case <-ctxDone:
 				return
 			case datagram := <-m.recvdDatagrams:
-				if protocol, ok := m.GetRegisteredProtocol(datagram.Protocol); ok {
+				if protocol, ok := m.GetRegisteredIPProtocol(datagram.Protocol); ok {
 					protocol.Recv(datagram)
 				}
 			}
@@ -90,17 +90,17 @@ func (m *mockNetworkLayer) Interface(name string) network.Interface {
 	return m.intf
 }
 
-func (m *mockNetworkLayer) RegisterProtocol(protocol network.IPProtocol) {
+func (m *mockNetworkLayer) RegisterIPProtocol(protocol network.IPProtocol) {
 	m.protocols[protocol.GetID()] = protocol
 }
 
-func (m *mockNetworkLayer) DeregisterProtocol(protocolID gplayers.IPProtocol) bool {
+func (m *mockNetworkLayer) DeregisterIPProtocol(protocolID gplayers.IPProtocol) bool {
 	_, ok := m.protocols[protocolID]
 	delete(m.protocols, protocolID)
 	return ok
 }
 
-func (m *mockNetworkLayer) GetRegisteredProtocol(protocolID gplayers.IPProtocol) (network.IPProtocol, bool) {
+func (m *mockNetworkLayer) GetRegisteredIPProtocol(protocolID gplayers.IPProtocol) (network.IPProtocol, bool) {
 	protocol, ok := m.protocols[protocolID]
 	return protocol, ok
 }

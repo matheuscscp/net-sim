@@ -232,16 +232,31 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		return 0, fmt.Errorf("(*tcpConn).ctx done before reading bytes: %w", ctx.Err())
 	}
 
-	// if some bytes are already available, return them right away
+	// if some bytes are still available from previous calls, return them right away
 	if n := t.pullFromReadBuf(b); n > 0 {
 		return n, nil
 	}
 
-	// if the next expected sequence number is already available in the cache, return the bytes right away
+	// prepare send ACK helper
+	sendAck := func() error {
+		if err := t.sendAckSegment(ctx); err != nil {
+			if err := checkStateErrors(); err != nil {
+				return err
+			}
+			if pkgcontext.IsContextError(ctx, err) {
+				return fmt.Errorf("(*tcpConn).ctx done while sending tcp ack segment: %w", err)
+			}
+			return fmt.Errorf("error sending tcp ack segment: %w", err)
+		}
+		return nil
+	}
+
+	// if the next expected sequence number is already available in the cache, return the bytes right away and
+	// send an ACK to the peer
 	if newReadBuf, ok := t.readSeqCache[t.nextExpectedSeq]; ok {
 		delete(t.readSeqCache, t.nextExpectedSeq)
 		t.setReadBuf(newReadBuf)
-		return t.pullFromReadBuf(b), nil
+		return t.pullFromReadBuf(b), sendAck()
 	}
 
 	// process data segments already available in the read channel before sending an ACK to provoke the peer,
@@ -273,7 +288,7 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		// process next data segment
 		case dataSegment := <-t.readCh:
 			if processDataSegment(dataSegment) {
-				return t.pullFromReadBuf(b), nil
+				return t.pullFromReadBuf(b), sendAck()
 			}
 		// context done
 		case <-ctxDone:
@@ -285,18 +300,6 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 	}
 
 	// send ACK segment to provoke peer to send the next data segment that we are expecting
-	sendAck := func() error {
-		if err := t.sendAckSegment(ctx); err != nil {
-			if err := checkStateErrors(); err != nil {
-				return err
-			}
-			if pkgcontext.IsContextError(ctx, err) {
-				return fmt.Errorf("(*tcpConn).ctx done while sending tcp ack segment: %w", err)
-			}
-			return fmt.Errorf("error sending tcp ack segment: %w", err)
-		}
-		return nil
-	}
 	if err := sendAck(); err != nil {
 		return 0, err
 	}
@@ -320,7 +323,7 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		// data segment arrived
 		case dataSegment := <-t.readCh:
 			if processDataSegment(dataSegment) {
-				return t.pullFromReadBuf(b), nil
+				return t.pullFromReadBuf(b), sendAck()
 			}
 		}
 	}

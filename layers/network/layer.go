@@ -44,9 +44,9 @@ type (
 		ForwardingTable() *ForwardingTable
 		Interfaces() []Interface
 		Interface(name string) Interface
-		RegisterProtocol(protocol IPProtocol)
-		DeregisterProtocol(protocolID gplayers.IPProtocol) bool
-		GetRegisteredProtocol(protocolID gplayers.IPProtocol) (IPProtocol, bool)
+		RegisterIPProtocol(protocol IPProtocol)
+		DeregisterIPProtocol(protocolID gplayers.IPProtocol) bool
+		GetRegisteredIPProtocol(protocolID gplayers.IPProtocol) (IPProtocol, bool)
 		Close() error
 		StackName() string
 	}
@@ -245,7 +245,7 @@ func (l *layer) listen(ctx context.Context) {
 					// deliver to protocol
 					dstIPAddress := gplayers.NewIPEndpoint(datagram.DstIP)
 					if dstIPAddress == intf.IPAddress() || dstIPAddress == intf.BroadcastIPAddress() {
-						if protocol, ok := l.GetRegisteredProtocol(datagram.Protocol); ok {
+						if protocol, ok := l.GetRegisteredIPProtocol(datagram.Protocol); ok {
 							protocol.Recv(datagram)
 						}
 						continue
@@ -277,13 +277,13 @@ func (l *layer) listen(ctx context.Context) {
 	}
 }
 
-func (l *layer) RegisterProtocol(protocol IPProtocol) {
+func (l *layer) RegisterIPProtocol(protocol IPProtocol) {
 	l.protocolsMu.Lock()
 	l.protocols[protocol.GetID()] = protocol
 	l.protocolsMu.Unlock()
 }
 
-func (l *layer) DeregisterProtocol(protocolID gplayers.IPProtocol) bool {
+func (l *layer) DeregisterIPProtocol(protocolID gplayers.IPProtocol) bool {
 	l.protocolsMu.Lock()
 	_, ok := l.protocols[protocolID]
 	delete(l.protocols, protocolID)
@@ -291,7 +291,7 @@ func (l *layer) DeregisterProtocol(protocolID gplayers.IPProtocol) bool {
 	return ok
 }
 
-func (l *layer) GetRegisteredProtocol(protocolID gplayers.IPProtocol) (IPProtocol, bool) {
+func (l *layer) GetRegisteredIPProtocol(protocolID gplayers.IPProtocol) (IPProtocol, bool) {
 	l.protocolsMu.RLock()
 	protocol, ok := l.protocols[protocolID]
 	l.protocolsMu.RUnlock()

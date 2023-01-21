@@ -15,28 +15,41 @@ import (
 )
 
 type (
-	MockIPProtocol struct {
+	TestIPProtocol struct {
 		DatagramsRecvd chan *gplayers.IPv4
+	}
+
+	MockIPProtocol struct {
+		IPProtocol gplayers.IPProtocol
+		RecvFunc   func(datagram *gplayers.IPv4)
 	}
 )
 
-func NewMockIPProtocol() *MockIPProtocol {
-	return &MockIPProtocol{
+func NewTestIPProtocol() *TestIPProtocol {
+	return &TestIPProtocol{
 		DatagramsRecvd: make(chan *gplayers.IPv4, 1024),
 	}
 }
 
-func (m *MockIPProtocol) Close(t *testing.T) {
-	close(m.DatagramsRecvd)
-	FlagErrorForUnexpectedDatagrams(t, m.DatagramsRecvd)
+func (p *TestIPProtocol) Close(t *testing.T) {
+	close(p.DatagramsRecvd)
+	FlagErrorForUnexpectedDatagrams(t, p.DatagramsRecvd)
 }
 
-func (m *MockIPProtocol) GetID() gplayers.IPProtocol {
+func (p *TestIPProtocol) GetID() gplayers.IPProtocol {
 	return 0
 }
 
+func (p *TestIPProtocol) Recv(datagram *gplayers.IPv4) {
+	p.DatagramsRecvd <- datagram
+}
+
+func (m *MockIPProtocol) GetID() gplayers.IPProtocol {
+	return m.IPProtocol
+}
+
 func (m *MockIPProtocol) Recv(datagram *gplayers.IPv4) {
-	m.DatagramsRecvd <- datagram
+	m.RecvFunc(datagram)
 }
 
 func AssertDatagram(
