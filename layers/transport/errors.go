@@ -34,6 +34,8 @@ var (
 	ErrDeadlineExceeded     = errors.New("deadline exceeded")
 	ErrConnClosed           = errors.New("connection closed")
 	ErrConnReset            = errors.New("connection reset")
+
+	errResetDelay = errors.New("reset delay")
 )
 
 func (l *listenerNotFoundError) Error() string {

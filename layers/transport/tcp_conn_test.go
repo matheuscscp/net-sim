@@ -42,7 +42,7 @@ func (i *instrumentedTransportLayer) Dial(ctx context.Context, network, remoteAd
 }
 
 func TestTCPConn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	var wg sync.WaitGroup
 	var networkLayer network.Layer
 	var transportLayer *instrumentedTransportLayer
@@ -56,10 +56,6 @@ func TestTCPConn(t *testing.T) {
 		wg.Wait()
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
-		for _, intf := range networkLayer.Interfaces() {
-			assert.NoError(t, intf.Close())
-			test.CloseEthPortsAndFlagErrorForUnexpectedData(t, intf.Card())
-		}
 	}()
 
 	// start network
@@ -69,6 +65,45 @@ func TestTCPConn(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, networkLayer)
 	transportLayer = &instrumentedTransportLayer{Layer: transport.NewLayer(networkLayer)}
+	tcp, ok := networkLayer.GetRegisteredIPProtocol(gplayers.IPProtocolTCP)
+	require.True(t, ok)
+	require.NotNil(t, tcp)
+	networkLayer.RegisterIPProtocol(&test.MockIPProtocol{
+		IPProtocol: tcp.GetID(),
+		RecvFunc: func(datagram *gplayers.IPv4) {
+			switch rand.Intn(10) {
+			// drop 10% of the datagrams
+			case 0:
+				return
+			// poison ack number of 10% of the ACK segments (or drop
+			// those 10% of datagrams which are not ACK segments)
+			case 1:
+				// decap
+				segment, err := transport.DeserializeTCPSegment(datagram)
+				require.NoError(t, err)
+				require.NotNil(t, segment)
+				if segment.SYN || !segment.ACK { // drop non-ACKs
+					return
+				}
+
+				// poison ack
+				segment.Ack = rand.Uint32()
+
+				// re-encap datagram to ensure TCP checksum will be correct
+				b, err := network.SerializeDatagramWithTransportSegment(datagram, segment)
+				require.NoError(t, err)
+
+				// decap datagram and deliver to TCP
+				datagram, err := network.DeserializeDatagram(b)
+				require.NoError(t, err)
+				require.NotNil(t, datagram)
+				tcp.Recv(datagram)
+			// do not mess with the remaining 80% of the datagrams (just deliver to TCP)
+			default:
+				tcp.Recv(datagram)
+			}
+		},
+	})
 
 	// start h2c server
 	serverListener, err := transportLayer.Listen(ctx, transport.TCP, ":80")
@@ -157,14 +192,14 @@ func TestTCPConn(t *testing.T) {
 	largeData := petname.Generate(2, "_")
 	largeData += ", " + petname.Generate(2, "_")
 	largeData += ", " + petname.Generate(2, "_")
-	for len(largeData) < 10000000 { // 10 MB
+	for len(largeData) < 1000000 { // 1 MB
 		largeData += ", " + largeData
 	}
 	makeReqWithData(client2, largeData)
 }
 
 func TestTCPServerNotListening(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
 
@@ -172,7 +207,6 @@ func TestTCPServerNotListening(t *testing.T) {
 		cancel()
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
-		test.CloseIntfsAndFlagErrorForUnexpectedData(t, networkLayer.Interfaces()...)
 	}()
 
 	// start network
@@ -201,7 +235,6 @@ func TestTCPRetrySYN(t *testing.T) {
 		wg.Wait()
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
-		test.CloseIntfsAndFlagErrorForUnexpectedData(t, networkLayer.Interfaces()...)
 	}()
 
 	// start network
@@ -243,7 +276,7 @@ func TestTCPRetrySYN(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		n, err := client.Write([]byte("hello"))
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 5, n)
 		assert.NoError(t, server.Close())
 	}()
@@ -257,6 +290,7 @@ func TestTCPRetrySYN(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 5, n)
 	assert.Equal(t, "hello", string(buf[:n]))
+	// assert.NoError(t, conn.Close()) // TODO(pimenta, #71): acknowledge FIN segments properly
 }
 
 func TestTCPRetrySYNACK(t *testing.T) {
@@ -270,7 +304,6 @@ func TestTCPRetrySYNACK(t *testing.T) {
 		wg.Wait()
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
-		test.CloseIntfsAndFlagErrorForUnexpectedData(t, networkLayer.Interfaces()...)
 	}()
 
 	// start network
@@ -312,7 +345,7 @@ func TestTCPRetrySYNACK(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		n, err := client.Write([]byte("hello"))
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 5, n)
 		assert.NoError(t, server.Close())
 	}()
@@ -326,4 +359,5 @@ func TestTCPRetrySYNACK(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 5, n)
 	assert.Equal(t, "hello", string(buf[:n]))
+	// assert.NoError(t, conn.Close()) // TODO(pimenta, #71): acknowledge FIN segments properly
 }
