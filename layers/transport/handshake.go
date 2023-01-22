@@ -81,9 +81,6 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 		// the server transport layer is up but not listening at the dst port
 		case <-client.serverAckrst:
 			return ErrConnReset
-		// context
-		case <-ctx.Done():
-			return fmt.Errorf("(*tcpClientHandshake).do(ctx) done while waiting for tcp synack segment: %w", ctx.Err())
 		// SYNACK segment arrived
 		case serverSynack := <-client.serverSynack:
 			// reset connection upon wrong ack number
@@ -105,6 +102,9 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 			}
 
 			return nil
+		// context
+		case <-ctx.Done():
+			return fmt.Errorf("(*tcpClientHandshake).do(ctx) done while waiting for tcp synack segment: %w", ctx.Err())
 		}
 	}
 }
