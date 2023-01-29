@@ -42,7 +42,9 @@ func (i *instrumentedTransportLayer) Dial(ctx context.Context, network, remoteAd
 }
 
 func TestTCPConn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	var wg sync.WaitGroup
 	var networkLayer network.Layer
 	var transportLayer *instrumentedTransportLayer
@@ -199,6 +201,8 @@ func TestTCPConn(t *testing.T) {
 }
 
 func TestTCPServerNotListening(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
@@ -224,7 +228,89 @@ func TestTCPServerNotListening(t *testing.T) {
 	assert.Contains(t, err.Error(), "connection reset")
 }
 
+func TestTCPHandshakeWrongSeq(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	var networkLayer network.Layer
+	var transportLayer transport.Layer
+	var wg sync.WaitGroup
+
+	defer func() {
+		cancel()
+		wg.Wait()
+		assert.NoError(t, transportLayer.Close())
+		assert.NoError(t, networkLayer.Close())
+	}()
+
+	// start network
+	networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
+		DefaultRouteInterface: "lo",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, networkLayer)
+	transportLayer = transport.NewLayer(networkLayer)
+	tcp, ok := networkLayer.GetRegisteredIPProtocol(gplayers.IPProtocolTCP)
+	require.True(t, ok)
+	require.NotNil(t, tcp)
+	poisoned := false
+	networkLayer.RegisterIPProtocol(&test.MockIPProtocol{
+		IPProtocol: tcp.GetID(),
+		RecvFunc: func(datagram *gplayers.IPv4) {
+			segment, err := transport.DeserializeTCPSegment(datagram)
+			require.NoError(t, err)
+			require.NotNil(t, segment)
+
+			// poison the first SYN segment
+			if !poisoned && segment.SYN && !segment.ACK {
+				poisoned = true
+
+				// poison seq
+				segment.Seq = rand.Uint32()
+
+				// re-encap datagram to ensure TCP checksum will be correct
+				b, err := network.SerializeDatagramWithTransportSegment(datagram, segment)
+				require.NoError(t, err)
+
+				// decap datagram and deliver to TCP
+				datagram, err := network.DeserializeDatagram(b)
+				require.NoError(t, err)
+				require.NotNil(t, datagram)
+				tcp.Recv(datagram)
+
+				return
+			}
+
+			tcp.Recv(datagram)
+		},
+	})
+
+	// start server
+	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
+	require.NoError(t, err)
+	require.NotNil(t, server)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		client, err := server.Accept()
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		n, err := client.Write([]byte("hello"))
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error(), "connection reset")
+		assert.Zero(t, n)
+	}()
+
+	// make request
+	conn, err := transportLayer.Dial(ctx, transport.TCP, "127.0.0.1:80")
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "server sent wrong ack number")
+	assert.Nil(t, conn)
+}
+
 func TestTCPRetrySYN(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
@@ -294,6 +380,8 @@ func TestTCPRetrySYN(t *testing.T) {
 }
 
 func TestTCPRetrySYNACK(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
