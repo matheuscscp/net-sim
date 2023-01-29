@@ -129,11 +129,16 @@ func (u *udpConn) Write(b []byte) (n int, err error) {
 }
 
 func (u *udpConn) Close() error {
+	u.closeInternalResourcesAndDeleteConnFromListener()
+	return nil
+}
+
+func (u *udpConn) closeInternalResourcesAndDeleteConnFromListener() bool {
 	// cancel ctx
 	var cancel context.CancelFunc
 	cancel, u.cancelCtx = u.cancelCtx, nil
 	if cancel == nil {
-		return nil
+		return false
 	}
 	cancel()
 
@@ -142,7 +147,9 @@ func (u *udpConn) Close() error {
 	u.listener.deleteConn(u.remoteAddr)
 
 	// close deadlines
-	return pkgio.Close(u.readDeadline, u.writeDeadline)
+	pkgio.Close(u.readDeadline, u.writeDeadline)
+
+	return true
 }
 
 func (u *udpConn) LocalAddr() net.Addr {
