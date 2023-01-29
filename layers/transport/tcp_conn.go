@@ -29,6 +29,7 @@ type (
 		listener           *listener
 		remoteAddr         addr
 		handshake          handshake
+		handshakeErr       error
 		handshakeCtx       context.Context
 		cancelHandshakeCtx context.CancelFunc
 		stateErr           error
@@ -43,13 +44,20 @@ type (
 		readStreamClosed bool
 		sendAckAsync     chan struct{} // event channel for triggering the send ack thread to send an ACK
 
-		seedSeq       uint32
-		nextSeq       uint32
-		writeMu       sync.Mutex
-		writeCh       chan uint32 // a stream of ack numbers
-		writeDeadline *deadline
+		seedSeq            uint32
+		nextSeq            uint32
+		writeMu            sync.Mutex
+		writeCh            chan uint32 // a stream of ack numbers
+		writeDeadline      *deadline
+		writeStreamClosed  bool
+		closeWriteStreamMu sync.Mutex
+		closeWriteStreamCh chan struct{}
 
 		strayOrDelayedAckSegments prometheus.Counter
+	}
+
+	BidirectionalStream interface {
+		CloseWrite() error
 	}
 )
 
@@ -71,6 +79,8 @@ var (
 		Name:      "stray_or_delayed_ack_segments",
 		Help:      "Total number of stray or delayed ACK segments.",
 	}, metricLabelsTCPConn)
+
+	_ BidirectionalStream = (*tcpConn)(nil)
 )
 
 func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handshake) conn {
@@ -98,8 +108,9 @@ func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handsha
 		readSeqCache: make(map[uint32][]byte),
 		sendAckAsync: make(chan struct{}, channelSize),
 
-		writeCh:       make(chan uint32, channelSize),
-		writeDeadline: newDeadline(),
+		writeCh:            make(chan uint32, channelSize),
+		writeDeadline:      newDeadline(),
+		closeWriteStreamCh: make(chan struct{}),
 
 		strayOrDelayedAckSegments: strayOrDelayedAckSegments.With(metricLabels),
 	}
@@ -178,17 +189,17 @@ func (t *tcpConn) doHandshake(ctx context.Context) error {
 	defer cancel()
 
 	// do handshake
-	if err := t.handshake.do(ctx, t); err != nil {
-		if pkgcontext.IsContextError(ctx, err) {
+	if t.handshakeErr = t.handshake.do(ctx, t); t.handshakeErr != nil {
+		if pkgcontext.IsContextError(ctx, t.handshakeErr) {
 			if !localCtxDone {
-				return fmt.Errorf("(*tcpConn).doHandshake(ctx) done while doing handshake: %w", err)
+				t.handshakeErr = fmt.Errorf("(*tcpConn).doHandshake(ctx) done while doing handshake: %w", t.handshakeErr)
 			}
 			if tCtxDone {
-				return fmt.Errorf("(*tcpConn).ctx done while doing handshake: %w", err)
+				t.handshakeErr = fmt.Errorf("(*tcpConn).ctx done while doing handshake: %w", t.handshakeErr)
 			}
-			return fmt.Errorf("(*tcpConn).handshakeCtx done while doing handshake: %w", err)
+			t.handshakeErr = fmt.Errorf("(*tcpConn).handshakeCtx done while doing handshake: %w", t.handshakeErr)
 		}
-		return err
+		return t.handshakeErr
 	}
 	t.handshake = nil
 
@@ -198,9 +209,13 @@ func (t *tcpConn) doHandshake(ctx context.Context) error {
 func (t *tcpConn) waitHandshake() (err error) {
 	select {
 	case <-t.handshakeCtx.Done():
-		err = fmt.Errorf("(*tcpConn).handshakeCtx done while waiting for handshake to complete: %w", t.handshakeCtx.Err())
+		err = t.handshakeErr
 	case <-t.ctx.Done():
-		err = fmt.Errorf("(*tcpConn).ctx done while waiting for handshake to complete: %w", t.ctx.Err())
+		if t.handshakeErr != nil {
+			err = t.handshakeErr
+		} else {
+			err = fmt.Errorf("(*tcpConn).ctx done while waiting for handshake to complete: %w", t.ctx.Err())
+		}
 	}
 	if t.handshake == nil {
 		err = nil
@@ -248,23 +263,6 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 
 	// forward data and FINs to Read()
 	if len(tcpSegment.Payload) > 0 || tcpSegment.FIN {
-		// if this is a FIN and the read stream is already closed, then another FIN
-		// segment has already been received previously, in which case the ACK sent
-		// most likely did not arrive at the peer, thus the peer is retrying the FIN
-		// segment. reply ACK again
-		if tcpSegment.FIN && t.readStreamClosed {
-			if err := t.sendAckSegment(t.ctx); err != nil &&
-				t.stateErr == nil &&
-				!pkgcontext.IsContextError(t.ctx, err) {
-				t.
-					connLogger().
-					WithError(err).
-					WithField("fin_tcp_segment", tcpSegment).
-					Error("error resending tcp ack segment for fin segment")
-			}
-			return
-		}
-
 		select {
 		case t.readCh <- tcpSegment:
 		default:
@@ -273,6 +271,26 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 
 	// forward ACKs to Write()
 	if tcpSegment.ACK {
+		// if the write stream on this side of the connection was
+		// previously closed and the acknowledgement number matches
+		// the next sequence number, then send another FIN segment
+		t.closeWriteStreamMu.Lock()
+		writeStreamClosed := t.writeStreamClosed
+		t.closeWriteStreamMu.Unlock()
+		if writeStreamClosed && tcpSegment.Ack == t.nextSeq {
+			if err := t.sendFinSegment(); err != nil &&
+				t.stateErr == nil &&
+				!pkgcontext.IsContextError(t.ctx, err) {
+				const msg = "error resending tcp fin segment"
+				t.
+					connLogger().
+					WithError(err).
+					WithField("ack_tcp_segment", tcpSegment).
+					Error(msg)
+			}
+			return
+		}
+
 		select {
 		case t.writeCh <- tcpSegment.Ack:
 		default:
@@ -281,10 +299,6 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 }
 
 func (t *tcpConn) Read(b []byte) (int, error) {
-	if err := t.waitHandshake(); err != nil {
-		return 0, err
-	}
-
 	// lock read
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
@@ -292,6 +306,11 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 	// check read stream closed
 	if t.readStreamClosed {
 		return 0, io.EOF
+	}
+
+	// wait handshake
+	if err := t.waitHandshake(); err != nil {
+		return 0, err
 	}
 
 	// create deadline context
@@ -377,8 +396,8 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		}
 
 		// handle FIN segments
-		t.nextExpectedSeq++
 		t.readStreamClosed = true
+		t.nextExpectedSeq++
 	}
 
 	// if the next expected sequence number is already available in the cache, return the bytes right away and
@@ -466,13 +485,20 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 }
 
 func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
-	if err = t.waitHandshake(); err != nil {
-		return
-	}
-
 	// lock write
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
+
+	// check write stream closed
+	if t.writeStreamClosed {
+		err = ErrWriteClosed
+		return
+	}
+
+	// wait handshake
+	if err = t.waitHandshake(); err != nil {
+		return
+	}
 
 	// create deadline context
 	var deadlineExceeded bool
@@ -545,6 +571,10 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 		case <-retransmissionTimeout.C:
 			nextByte = int64(ackedBytes)
 			backoffPowerOfTwo++
+		// write stream was closed
+		case <-t.closeWriteStreamCh:
+			err = ErrWriteClosed
+			return
 		// ACK segment arrived
 		case ack := <-t.writeCh:
 			seq := int64(t.nextSeq) + int64(ackedBytes)
@@ -575,24 +605,36 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 	return
 }
 
-func (t *tcpConn) Close() error {
-	if !t.closeInternalResourcesAndDeleteConnFromListener() {
+func (t *tcpConn) CloseWrite() error {
+	// lock close write stream
+	t.closeWriteStreamMu.Lock()
+	defer t.closeWriteStreamMu.Unlock()
+
+	// check already closed
+	if t.writeStreamClosed {
 		return nil
 	}
 
-	// send FIN segment if connection was established
-	if t.handshake == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		finDatagramHeader, finSegment := t.newDatagramHeaderAndSegment()
-		finSegment.FIN = true
-		finSegment.Seq = t.nextSeq
-		if err := t.listener.protocol.layer.send(ctx, finDatagramHeader, finSegment); err != nil {
-			return fmt.Errorf("error sending tcp fin segment: %w", err)
-		}
+	// close
+	t.writeStreamClosed = true
+	close(t.closeWriteStreamCh) // make Write() return (and run t.writeMu.Unlock())
+
+	// lock write to make sure t.nextSeq has the latest acknowledged value
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+
+	// send FIN
+	if err := t.sendFinSegment(); err != nil {
+		return fmt.Errorf("error sending tcp fin segment: %w", err)
 	}
 
 	return nil
+}
+
+func (t *tcpConn) Close() error {
+	err := t.CloseWrite()
+	t.closeInternalResourcesAndDeleteConnFromListener()
+	return err
 }
 
 func (t *tcpConn) LocalAddr() net.Addr {
@@ -665,12 +707,21 @@ func (t *tcpConn) sendSynackSegment(ctx context.Context) error {
 	return t.listener.protocol.layer.send(ctx, datagramHeader, segment)
 }
 
-func (t *tcpConn) closeInternalResourcesAndDeleteConnFromListener() bool {
+func (t *tcpConn) sendFinSegment() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	datagramHeader, segment := t.newDatagramHeaderAndSegment()
+	segment.FIN = true
+	segment.Seq = t.nextSeq
+	return t.listener.protocol.layer.send(ctx, datagramHeader, segment)
+}
+
+func (t *tcpConn) closeInternalResourcesAndDeleteConnFromListener() {
 	// cancel ctx and wait threads
 	var cancel context.CancelFunc
 	cancel, t.cancelCtx = t.cancelCtx, nil
 	if cancel == nil {
-		return false
+		return
 	}
 	cancel()
 	t.wg.Wait()
@@ -681,8 +732,6 @@ func (t *tcpConn) closeInternalResourcesAndDeleteConnFromListener() bool {
 
 	// close deadlines
 	pkgio.Close(t.readDeadline, t.writeDeadline)
-
-	return true
 }
 
 func (t *tcpConn) connLogger() logrus.FieldLogger {

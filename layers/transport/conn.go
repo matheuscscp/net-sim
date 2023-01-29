@@ -14,7 +14,7 @@ type (
 		net.Conn
 		doHandshake(ctx context.Context) error
 		recv(segment gopacket.TransportLayer)
-		closeInternalResourcesAndDeleteConnFromListener() bool
+		closeInternalResourcesAndDeleteConnFromListener()
 	}
 
 	// clientConn represents a client connection. It wraps a conn for

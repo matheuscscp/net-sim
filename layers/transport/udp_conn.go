@@ -133,12 +133,12 @@ func (u *udpConn) Close() error {
 	return nil
 }
 
-func (u *udpConn) closeInternalResourcesAndDeleteConnFromListener() bool {
+func (u *udpConn) closeInternalResourcesAndDeleteConnFromListener() {
 	// cancel ctx
 	var cancel context.CancelFunc
 	cancel, u.cancelCtx = u.cancelCtx, nil
 	if cancel == nil {
-		return false
+		return
 	}
 	cancel()
 
@@ -148,8 +148,6 @@ func (u *udpConn) closeInternalResourcesAndDeleteConnFromListener() bool {
 
 	// close deadlines
 	pkgio.Close(u.readDeadline, u.writeDeadline)
-
-	return true
 }
 
 func (u *udpConn) LocalAddr() net.Addr {
