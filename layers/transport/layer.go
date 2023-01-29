@@ -121,56 +121,63 @@ func NewLayer(networkLayer network.Layer) Layer {
 					switch datagram.Protocol {
 					case gplayers.IPProtocolTCP:
 						if err = l.tcp.decapAndDemux(datagram); err != nil {
-							// check listener not found and send reset segment
-							var listenerNotFoundErr *listenerNotFoundError
-							if errors.As(err, &listenerNotFoundErr) {
-								unmatchedSegment := listenerNotFoundErr.segment.(*gplayers.TCP)
-
-								// not necessary for FIN segments since this is likely
-								// a connection that was just closed from this side/host
-								// TODO(pimenta, #71): acknowledge FIN segments properly
-								if unmatchedSegment.FIN {
-									continue
-								}
-
-								// not necessary for RST segments (and also avoids a loop)
-								if unmatchedSegment.RST {
-									continue
-								}
-
-								// send
+							// prepare helpers for replying unmatched segments
+							replyUnmatchedSegment := func(unmatched, reply *gplayers.TCP) error {
 								datagramHeader := &gplayers.IPv4{
 									DstIP:    datagram.SrcIP,
 									SrcIP:    datagram.DstIP,
 									Protocol: gplayers.IPProtocolTCP,
 								}
-								segment := &gplayers.TCP{
-									DstPort: unmatchedSegment.SrcPort,
-									SrcPort: unmatchedSegment.DstPort,
-									ACK:     true,
-									RST:     true,
+								reply.DstPort = unmatched.SrcPort
+								reply.SrcPort = unmatched.DstPort
+								return l.send(ctx, datagramHeader, reply)
+							}
+							replyAckForUnmatchedFinSegment := func(unmatchedFin *gplayers.TCP) {
+								sendErr := replyUnmatchedSegment(unmatchedFin, &gplayers.TCP{
+									ACK: true,
+									Ack: unmatchedFin.Seq + 1,
+								})
+								if sendErr != nil {
+									err = fmt.Errorf("error replying ack for unmatched tcp fin segment: %w", sendErr)
 								}
-								if err = l.send(ctx, datagramHeader, segment); err != nil {
-									err = fmt.Errorf("error sending tcp ackrst segment: %w", err)
+							}
+							replyAckrstForUnmatchedSegment := func(unmatchedFin *gplayers.TCP) {
+								sendErr := replyUnmatchedSegment(unmatchedFin, &gplayers.TCP{
+									ACK: true,
+									RST: true,
+								})
+								if sendErr != nil {
+									err = fmt.Errorf("error replying ackrst for unmatched tcp segment: %w", sendErr)
 								}
 							}
 
-							// print a debug log if the conn was not found
+							// check listener not found
+							var listenerNotFoundErr *listenerNotFoundError
+							if errors.As(err, &listenerNotFoundErr) {
+								switch unmatchedSegment := listenerNotFoundErr.segment.(*gplayers.TCP); {
+								case unmatchedSegment.RST:
+									// no-op
+									continue
+								case unmatchedSegment.FIN:
+									replyAckForUnmatchedFinSegment(unmatchedSegment)
+								default:
+									replyAckrstForUnmatchedSegment(unmatchedSegment)
+								}
+							}
+
+							// check conn not found
 							var connNotFoundErr *connNotFoundError
 							if errors.As(err, &connNotFoundErr) {
-								unmatchedSegment := connNotFoundErr.segment.(*gplayers.TCP)
-
-								// no debug necessary for FIN segments since this is likely
-								// a connection that was just closed from this side/host
-								// TODO(pimenta, #71): acknowledge FIN segments properly
-								if unmatchedSegment.FIN {
-									continue
+								switch unmatchedSegment := connNotFoundErr.segment.(*gplayers.TCP); {
+								case unmatchedSegment.FIN:
+									replyAckForUnmatchedFinSegment(unmatchedSegment)
+								// print a debug log if the conn was not found
+								default:
+									err = nil
+									logrus.
+										WithField("segment", unmatchedSegment).
+										Debug("conn not found for tcp segment")
 								}
-
-								err = nil
-								logrus.
-									WithField("segment", unmatchedSegment).
-									Debug("conn not found for tcp segment")
 							}
 						}
 					case gplayers.IPProtocolUDP:
