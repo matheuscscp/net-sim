@@ -132,23 +132,25 @@ func NewLayer(networkLayer network.Layer) Layer {
 								reply.SrcPort = unmatched.DstPort
 								return l.send(ctx, datagramHeader, reply)
 							}
-							replyAckForUnmatchedFinSegment := func(unmatchedFin *gplayers.TCP) {
-								sendErr := replyUnmatchedSegment(unmatchedFin, &gplayers.TCP{
+							replyAckForUnmatchedFinSegment := func(unmatchedFin *gplayers.TCP) error {
+								err := replyUnmatchedSegment(unmatchedFin, &gplayers.TCP{
 									ACK: true,
 									Ack: unmatchedFin.Seq + 1,
 								})
-								if sendErr != nil {
-									err = fmt.Errorf("error replying ack for unmatched tcp fin segment: %w", sendErr)
+								if err != nil {
+									return fmt.Errorf("error replying ack for unmatched tcp fin segment: %w", err)
 								}
+								return nil
 							}
-							replyAckrstForUnmatchedSegment := func(unmatchedFin *gplayers.TCP) {
-								sendErr := replyUnmatchedSegment(unmatchedFin, &gplayers.TCP{
+							replyAckrstForUnmatchedSegment := func(unmatchedFin *gplayers.TCP) error {
+								err := replyUnmatchedSegment(unmatchedFin, &gplayers.TCP{
 									ACK: true,
 									RST: true,
 								})
-								if sendErr != nil {
-									err = fmt.Errorf("error replying ackrst for unmatched tcp segment: %w", sendErr)
+								if err != nil {
+									return fmt.Errorf("error replying ackrst for unmatched tcp segment: %w", err)
 								}
+								return nil
 							}
 
 							// check listener not found
@@ -159,9 +161,13 @@ func NewLayer(networkLayer network.Layer) Layer {
 									// no-op
 									continue
 								case unmatchedSegment.FIN:
-									replyAckForUnmatchedFinSegment(unmatchedSegment)
+									if err = replyAckForUnmatchedFinSegment(unmatchedSegment); err == nil {
+										continue
+									}
 								default:
-									replyAckrstForUnmatchedSegment(unmatchedSegment)
+									if err = replyAckrstForUnmatchedSegment(unmatchedSegment); err == nil {
+										continue
+									}
 								}
 							}
 
@@ -170,7 +176,9 @@ func NewLayer(networkLayer network.Layer) Layer {
 							if errors.As(err, &connNotFoundErr) {
 								switch unmatchedSegment := connNotFoundErr.segment.(*gplayers.TCP); {
 								case unmatchedSegment.FIN:
-									replyAckForUnmatchedFinSegment(unmatchedSegment)
+									if err = replyAckForUnmatchedFinSegment(unmatchedSegment); err == nil {
+										continue
+									}
 								// print a debug log if the conn was not found
 								default:
 									err = nil
