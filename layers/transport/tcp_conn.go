@@ -232,7 +232,7 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 					WithField("syn_tcp_segment", tcpSegment).
 					Error(msg)
 				t.stateErr = fmt.Errorf("%s: %w", msg, err)
-				t.closeInternalResourcesAndDeleteConn()
+				t.closeInternalResourcesAndDeleteConnFromListener()
 			}
 		}
 		return
@@ -246,7 +246,7 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 	}
 	if tcpSegment.RST {
 		t.stateErr = ErrConnReset
-		t.closeInternalResourcesAndDeleteConn()
+		t.closeInternalResourcesAndDeleteConnFromListener()
 		return
 	}
 
@@ -535,7 +535,7 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 }
 
 func (t *tcpConn) Close() error {
-	if !t.closeInternalResourcesAndDeleteConn() {
+	if !t.closeInternalResourcesAndDeleteConnFromListener() {
 		return nil
 	}
 
@@ -624,7 +624,7 @@ func (t *tcpConn) sendSynackSegment(ctx context.Context) error {
 	return t.listener.protocol.layer.send(ctx, datagramHeader, segment)
 }
 
-func (t *tcpConn) closeInternalResourcesAndDeleteConn() bool {
+func (t *tcpConn) closeInternalResourcesAndDeleteConnFromListener() bool {
 	// cancel ctx and wait threads
 	var cancel context.CancelFunc
 	cancel, t.cancelCtx = t.cancelCtx, nil
