@@ -68,7 +68,7 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 		segment.SYN = true
 		segment.Seq = clientSeq
 		if err := t.listener.protocol.layer.send(ctx, datagramHeader, segment); err != nil {
-			return fmt.Errorf("error sending tcp syn segment: %w", err)
+			return fmt.Errorf("error sending tcp handshake syn segment: %w", err)
 		}
 
 		// wait for SYNACK segment
@@ -85,7 +85,7 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 		case serverSynack := <-client.serverSynack:
 			// reset connection upon wrong ack number
 			if serverSynack.ack != clientSeq+1 {
-				err := fmt.Errorf("server sent wrong ack number, want %v, got %v. client reset the connection", clientSeq+1, serverSynack.ack)
+				err := fmt.Errorf("handshake error: server sent wrong ack number, want %v, got %v. client will reset the connection", clientSeq+1, serverSynack.ack)
 				if ackrstErr := t.sendAckrstSegment(ctx); ackrstErr != nil {
 					return fmt.Errorf("%w (error sending tcp ackrst segment: %v)", err, ackrstErr)
 				}
@@ -98,7 +98,11 @@ func (client *tcpClientHandshake) do(ctx context.Context, conn conn) error {
 
 			// send ACK segment
 			if err := t.sendAckSegment(ctx); err != nil {
-				return fmt.Errorf("error sending tcp ack segment: %w", err)
+				// no need to break the connection if an error happens here, just print a log
+				t.
+					connLogger().
+					WithError(err).
+					Error("error sending tcp handshake ack segment")
 			}
 
 			return nil
@@ -140,7 +144,7 @@ func (server *tcpServerHandshake) do(ctx context.Context, conn conn) error {
 	serverSeq := rand.Uint32()
 	t.seedSeq = serverSeq
 	if err := t.sendSynackSegment(ctx); err != nil {
-		return fmt.Errorf("error sending tcp synack segment: %w", err)
+		return fmt.Errorf("error sending tcp handshake synack segment: %w", err)
 	}
 	t.nextSeq = serverSeq + 1
 

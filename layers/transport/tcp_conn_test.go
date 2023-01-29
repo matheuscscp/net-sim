@@ -44,7 +44,7 @@ func (i *instrumentedTransportLayer) Dial(ctx context.Context, network, remoteAd
 func TestTCPConn(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	var wg sync.WaitGroup
 	var networkLayer network.Layer
 	var transportLayer *instrumentedTransportLayer

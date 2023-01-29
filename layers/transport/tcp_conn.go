@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -33,13 +34,14 @@ type (
 		stateErr           error
 		isServer           bool
 
-		nextExpectedSeq uint32
-		readMu          sync.Mutex
-		readCh          chan *gplayers.TCP // data segments buffer
-		readDeadline    *deadline
-		readBuf         []byte            // data ready to be returned
-		readSeqCache    map[uint32][]byte // cached data mapped by sequence number
-		sendAck         chan struct{}
+		nextExpectedSeq  uint32
+		readMu           sync.Mutex
+		readCh           chan *gplayers.TCP // data segments buffer
+		readDeadline     *deadline
+		readBuf          []byte            // data ready to be returned
+		readSeqCache     map[uint32][]byte // cached data mapped by sequence number
+		readStreamClosed bool
+		sendAckAsync     chan struct{} // event channel for triggering the send ack thread to send an ACK
 
 		seedSeq       uint32
 		nextSeq       uint32
@@ -94,7 +96,7 @@ func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handsha
 		readCh:       make(chan *gplayers.TCP, channelSize),
 		readDeadline: newDeadline(),
 		readSeqCache: make(map[uint32][]byte),
-		sendAck:      make(chan struct{}, channelSize),
+		sendAckAsync: make(chan struct{}, channelSize),
 
 		writeCh:       make(chan uint32, channelSize),
 		writeDeadline: newDeadline(),
@@ -124,7 +126,7 @@ func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handsha
 				}
 				return nil
 			// another sendAck event was requested. reset delay
-			case <-t.sendAck:
+			case <-t.sendAckAsync:
 				return errResetDelay
 			// context
 			case <-ctxDone:
@@ -138,7 +140,7 @@ func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handsha
 		for {
 			select {
 			// process sendAck event
-			case <-t.sendAck:
+			case <-t.sendAckAsync:
 				for err := delayAndSendAck(); err != nil; err = delayAndSendAck() {
 					if errors.Is(err, errResetDelay) {
 						continue
@@ -193,8 +195,7 @@ func (t *tcpConn) doHandshake(ctx context.Context) error {
 	return nil
 }
 
-func (t *tcpConn) waitHandshake() error {
-	var err error
+func (t *tcpConn) waitHandshake() (err error) {
 	select {
 	case <-t.handshakeCtx.Done():
 		err = fmt.Errorf("(*tcpConn).handshakeCtx done while waiting for handshake to complete: %w", t.handshakeCtx.Err())
@@ -202,9 +203,9 @@ func (t *tcpConn) waitHandshake() error {
 		err = fmt.Errorf("(*tcpConn).ctx done while waiting for handshake to complete: %w", t.ctx.Err())
 	}
 	if t.handshake == nil {
-		return nil
+		err = nil
 	}
-	return err
+	return
 }
 
 func (t *tcpConn) recv(segment gopacket.TransportLayer) {
@@ -225,7 +226,7 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 			if err := t.sendSynackSegment(t.ctx); err != nil &&
 				t.stateErr == nil &&
 				!pkgcontext.IsContextError(t.ctx, err) {
-				const msg = "error resending tcp synack segment"
+				const msg = "error resending tcp handshake synack segment"
 				t.
 					connLogger().
 					WithError(err).
@@ -238,20 +239,32 @@ func (t *tcpConn) recv(segment gopacket.TransportLayer) {
 		return
 	}
 
-	// handle end of connection
-	if tcpSegment.FIN {
-		t.stateErr = ErrConnClosed
-		t.Close()
-		return
-	}
+	// handle RST
 	if tcpSegment.RST {
 		t.stateErr = ErrConnReset
 		t.closeInternalResourcesAndDeleteConnFromListener()
 		return
 	}
 
-	// forward data to Read()
-	if len(tcpSegment.Payload) > 0 {
+	// forward data and FINs to Read()
+	if len(tcpSegment.Payload) > 0 || tcpSegment.FIN {
+		// if this is a FIN and the read stream is already closed, then another FIN
+		// segment has already been received previously, in which case the ACK sent
+		// most likely did not arrive at the peer, thus the peer is retrying the FIN
+		// segment. reply ACK again
+		if tcpSegment.FIN && t.readStreamClosed {
+			if err := t.sendAckSegment(t.ctx); err != nil &&
+				t.stateErr == nil &&
+				!pkgcontext.IsContextError(t.ctx, err) {
+				t.
+					connLogger().
+					WithError(err).
+					WithField("fin_tcp_segment", tcpSegment).
+					Error("error resending tcp ack segment for fin segment")
+			}
+			return
+		}
+
 		select {
 		case t.readCh <- tcpSegment:
 		default:
@@ -272,14 +285,14 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		return 0, err
 	}
 
-	// if buffer is empty return immediately
-	if len(b) == 0 {
-		return 0, nil
-	}
-
 	// lock read
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
+
+	// check read stream closed
+	if t.readStreamClosed {
+		return 0, io.EOF
+	}
 
 	// create deadline context
 	var deadlineExceeded bool
@@ -301,8 +314,35 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		return 0, fmt.Errorf("(*tcpConn).ctx done before reading bytes: %w", ctx.Err())
 	}
 
+	// if output buffer is empty return immediately
+	if len(b) == 0 {
+		return 0, nil
+	}
+
+	// prepare send ack helper
+	sendAck := func() error {
+		if err := t.sendAckSegment(ctx); err != nil {
+			if err := checkStateErrors(); err != nil {
+				return err
+			}
+			if pkgcontext.IsContextError(ctx, err) {
+				return fmt.Errorf("(*tcpConn).ctx done while sending tcp ack segment: %w", err)
+			}
+			return fmt.Errorf("error sending tcp ack segment: %w", err)
+		}
+		return nil
+	}
+
 	// prepare helper to pull bytes from the readBuf and update the next expected sequence number
 	pullFromReadBufAndUpdateNextExpectedSeq := func() (n int, err error) {
+		// handle read stream closed
+		if t.readStreamClosed {
+			if err = sendAck(); err == nil {
+				err = io.EOF
+			}
+			return
+		}
+
 		// pull
 		if n = copy(b, t.readBuf); n == 0 {
 			return
@@ -315,7 +355,7 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		// update
 		t.nextExpectedSeq = uint32(int64(t.nextExpectedSeq) + int64(n))
 		select {
-		case t.sendAck <- struct{}{}:
+		case t.sendAckAsync <- struct{}{}:
 		case <-ctxDone:
 			if err = checkStateErrors(); err == nil {
 				err = fmt.Errorf("(*tcpConn).ctx done while scheduling tcp ack segment to be sent: %w", err)
@@ -329,16 +369,29 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 		return n, err
 	}
 
+	// prepare helper to update the readBuf. empty payload means that the segment has the FIN flag set
+	updateReadBuf := func(payload []byte) {
+		if len(payload) > 0 {
+			t.readBuf = payload
+			return
+		}
+
+		// handle FIN segments
+		t.nextExpectedSeq++
+		t.readStreamClosed = true
+	}
+
 	// if the next expected sequence number is already available in the cache, return the bytes right away and
 	// send an ACK to the peer
 	if dataSegmentPayload, ok := t.readSeqCache[t.nextExpectedSeq]; ok {
 		delete(t.readSeqCache, t.nextExpectedSeq)
-		t.readBuf = dataSegmentPayload
+		updateReadBuf(dataSegmentPayload)
 		return pullFromReadBufAndUpdateNextExpectedSeq()
 	}
 
-	// process data segments available in the read channel before sending an ACK to provoke the peer, adding
-	// the payload of segments whose sequence number do not match the next expected one in the cache
+	// process data segments available in the read channel before sending an ACK to provoke the peer. the helper
+	// function below adds the payload of segments whose sequence number do not match the next expected one in
+	// the cache, and updates the readBuf otherwise
 	processDataSegment := func(dataSegment *gplayers.TCP) bool {
 		// sequence number does not match the next expected sequence number.
 		// this might be a future segment, so just cache it for now. make
@@ -354,7 +407,7 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 			return false
 		}
 
-		t.readBuf = dataSegment.Payload
+		updateReadBuf(dataSegment.Payload)
 		return true
 	}
 	for done := false; !done; {
@@ -377,18 +430,6 @@ func (t *tcpConn) Read(b []byte) (int, error) {
 	}
 
 	// send ACK segment to provoke peer to send the next data segment that we are expecting
-	sendAck := func() error {
-		if err := t.sendAckSegment(ctx); err != nil {
-			if err := checkStateErrors(); err != nil {
-				return err
-			}
-			if pkgcontext.IsContextError(ctx, err) {
-				return fmt.Errorf("(*tcpConn).ctx done while sending tcp ack segment: %w", err)
-			}
-			return fmt.Errorf("error sending tcp ack segment: %w", err)
-		}
-		return nil
-	}
 	if err := sendAck(); err != nil {
 		return 0, err
 	}
@@ -429,12 +470,6 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 		return
 	}
 
-	// if payload is empty return immediately
-	numBytes := int64(len(b))
-	if numBytes == 0 {
-		return
-	}
-
 	// lock write
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
@@ -457,6 +492,12 @@ func (t *tcpConn) Write(b []byte) (ackedBytes int, err error) {
 	}
 	if ctx.Err() != nil {
 		err = fmt.Errorf("(*tcpConn).ctx done before writing bytes: %w", ctx.Err())
+		return
+	}
+
+	// if payload is empty return immediately
+	numBytes := int64(len(b))
+	if numBytes == 0 {
 		return
 	}
 
