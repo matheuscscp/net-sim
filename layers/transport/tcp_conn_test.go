@@ -470,6 +470,26 @@ func TestTCPClose(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, networkLayer)
 	transportLayer = transport.NewLayer(networkLayer)
+	tcp, ok := networkLayer.GetRegisteredIPProtocol(gplayers.IPProtocolTCP)
+	require.True(t, ok)
+	require.NotNil(t, tcp)
+	dropped := false
+	networkLayer.RegisterIPProtocol(&test.MockIPProtocol{
+		IPProtocol: tcp.GetID(),
+		RecvFunc: func(datagram *gplayers.IPv4) {
+			segment, err := transport.DeserializeTCPSegment(datagram)
+			require.NoError(t, err)
+			require.NotNil(t, segment)
+
+			// drop the first FIN segment
+			if !dropped && segment.FIN {
+				dropped = true
+				return
+			}
+
+			tcp.Recv(datagram)
+		},
+	})
 
 	// start server
 	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
@@ -483,7 +503,8 @@ func TestTCPClose(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		n, err := client.Read([]byte{0x0})
-		assert.Equal(t, io.EOF, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "connection reset")
 		assert.Equal(t, 0, n)
 		assert.NoError(t, client.Close())
 	}()
@@ -520,6 +541,26 @@ func TestTCPCloseWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, networkLayer)
 	transportLayer = transport.NewLayer(networkLayer)
+	tcp, ok := networkLayer.GetRegisteredIPProtocol(gplayers.IPProtocolTCP)
+	require.True(t, ok)
+	require.NotNil(t, tcp)
+	dropped := false
+	networkLayer.RegisterIPProtocol(&test.MockIPProtocol{
+		IPProtocol: tcp.GetID(),
+		RecvFunc: func(datagram *gplayers.IPv4) {
+			segment, err := transport.DeserializeTCPSegment(datagram)
+			require.NoError(t, err)
+			require.NotNil(t, segment)
+
+			// drop the first FIN segment
+			if !dropped && segment.FIN {
+				dropped = true
+				return
+			}
+
+			tcp.Recv(datagram)
+		},
+	})
 
 	// start server
 	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
