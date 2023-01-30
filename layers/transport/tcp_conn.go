@@ -120,31 +120,25 @@ func (tcpFactory) newConn(listener *listener, remoteAddr addr, handshake handsha
 	go func() {
 		defer t.wg.Done()
 
+		sendAck := func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			return t.sendAckSegment(ctx)
+		}
+
 		delayAndSendAck := func() error {
 			sendDelay := time.NewTimer(100 * time.Millisecond)
 			defer sendDelay.Stop()
 			select {
-			// time to send
+			// delay finished. time to send
 			case <-sendDelay.C:
-				if err := t.sendAckSegment(ctx); err != nil {
-					if t.stateErr != nil {
-						return t.stateErr
-					}
-					if pkgcontext.IsContextError(ctx, err) {
-						return fmt.Errorf("(*tcpConn).ctx done while sending async tcp ack segment: %w", err)
-					}
-					return err
-				}
-				return nil
-			// another sendAck event was requested. reset delay
+				return sendAck()
+			// another send async ack was requested. reset delay
 			case <-t.sendAckAsync:
 				return errResetDelay
-			// context
+			// conn context done. send final ack
 			case <-ctxDone:
-				if t.stateErr != nil {
-					return t.stateErr
-				}
-				return fmt.Errorf("(*tcpConn).ctx done while delaying async tcp ack segment: %w", ctx.Err())
+				return sendAck()
 			}
 		}
 
