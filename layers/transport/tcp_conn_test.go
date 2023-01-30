@@ -314,11 +314,9 @@ func TestTCPRetrySYN(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
-	var wg sync.WaitGroup
 
 	defer func() {
 		cancel()
-		wg.Wait()
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
 	}()
@@ -355,6 +353,7 @@ func TestTCPRetrySYN(t *testing.T) {
 	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
 	require.NoError(t, err)
 	require.NotNil(t, server)
+	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -376,7 +375,8 @@ func TestTCPRetrySYN(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 5, n)
 	assert.Equal(t, "hello", string(buf[:n]))
-	// assert.NoError(t, conn.Close()) // TODO(pimenta, #71): acknowledge FIN segments properly
+	wg.Wait()
+	assert.NoError(t, conn.Close())
 }
 
 func TestTCPRetrySYNACK(t *testing.T) {
@@ -385,11 +385,9 @@ func TestTCPRetrySYNACK(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	var networkLayer network.Layer
 	var transportLayer transport.Layer
-	var wg sync.WaitGroup
 
 	defer func() {
 		cancel()
-		wg.Wait()
 		assert.NoError(t, transportLayer.Close())
 		assert.NoError(t, networkLayer.Close())
 	}()
@@ -426,6 +424,7 @@ func TestTCPRetrySYNACK(t *testing.T) {
 	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
 	require.NoError(t, err)
 	require.NotNil(t, server)
+	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -447,5 +446,114 @@ func TestTCPRetrySYNACK(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 5, n)
 	assert.Equal(t, "hello", string(buf[:n]))
-	// assert.NoError(t, conn.Close()) // TODO(pimenta, #71): acknowledge FIN segments properly
+	wg.Wait()
+	assert.NoError(t, conn.Close())
+}
+
+func TestTCPClose(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	var networkLayer network.Layer
+	var transportLayer transport.Layer
+
+	defer func() {
+		cancel()
+		assert.NoError(t, transportLayer.Close())
+		assert.NoError(t, networkLayer.Close())
+	}()
+
+	// start network
+	networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
+		DefaultRouteInterface: "lo",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, networkLayer)
+	transportLayer = transport.NewLayer(networkLayer)
+
+	// start server
+	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
+	require.NoError(t, err)
+	require.NotNil(t, server)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		client, err := server.Accept()
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		n, err := client.Read([]byte{0x0})
+		assert.Equal(t, io.EOF, err)
+		assert.Equal(t, 0, n)
+		assert.NoError(t, client.Close())
+	}()
+
+	// make request
+	conn, err := transportLayer.Dial(ctx, transport.TCP, "127.0.0.1:80")
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	require.NoError(t, conn.Close())
+	n, err := conn.Write([]byte{0x0})
+	assert.Equal(t, transport.ErrWriteClosed, err)
+	assert.Equal(t, 0, n)
+	wg.Wait()
+	assert.NoError(t, conn.Close())
+}
+
+func TestTCPCloseWrite(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	var networkLayer network.Layer
+	var transportLayer transport.Layer
+
+	defer func() {
+		cancel()
+		assert.NoError(t, transportLayer.Close())
+		assert.NoError(t, networkLayer.Close())
+	}()
+
+	// start network
+	networkLayer, err := network.NewLayer(ctx, network.LayerConfig{
+		DefaultRouteInterface: "lo",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, networkLayer)
+	transportLayer = transport.NewLayer(networkLayer)
+
+	// start server
+	server, err := transportLayer.Listen(ctx, transport.TCP, ":80")
+	require.NoError(t, err)
+	require.NotNil(t, server)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		client, err := server.Accept()
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		n, err := client.Read([]byte{0x0})
+		assert.Equal(t, io.EOF, err)
+		assert.Equal(t, 0, n)
+		n, err = client.Write([]byte("hello"))
+		require.NoError(t, err)
+		assert.Equal(t, 5, n)
+		assert.NoError(t, server.Close())
+	}()
+
+	// make request
+	conn, err := transportLayer.Dial(ctx, transport.TCP, "127.0.0.1:80")
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	require.NoError(t, conn.(transport.BidirectionalStream).CloseWrite())
+	n, err := conn.Write([]byte{0x0})
+	assert.Equal(t, transport.ErrWriteClosed, err)
+	assert.Equal(t, 0, n)
+	buf := make([]byte, 100)
+	n, err = conn.Read(buf)
+	assert.NoError(t, err)
+	assert.Equal(t, 5, n)
+	assert.Equal(t, "hello", string(buf[:n]))
+	wg.Wait()
+	assert.NoError(t, conn.Close())
 }

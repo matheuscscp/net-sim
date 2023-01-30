@@ -36,3 +36,10 @@ func (c *clientConn) Close() error {
 	}
 	return pkgio.Close(c.Conn, listener)
 }
+
+func (c *clientConn) CloseWrite() error {
+	if bidirStream, ok := c.Conn.(BidirectionalStream); ok {
+		return bidirStream.CloseWrite()
+	}
+	return nil
+}
