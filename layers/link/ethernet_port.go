@@ -209,8 +209,9 @@ func (e *ethernetPort) decapAndRecv(frameBuf []byte) {
 
 		// deserialize frame
 		pkt := gopacket.NewPacket(frameData, gplayers.LayerTypeEthernet, gopacket.Lazy)
-		frame = pkt.LinkLayer().(*gplayers.Ethernet)
-		if frame == nil || len(frame.Payload) == 0 { // an Ethernet frame must always have a payload
+		var ok bool
+		frame, ok = pkt.LinkLayer().(*gplayers.Ethernet)
+		if !ok || frame == nil || len(frame.Payload) == 0 { // an Ethernet frame must always have a payload
 			return fmt.Errorf("error deserializing link layer: %w", pkt.ErrorLayer().Error())
 		}
 
