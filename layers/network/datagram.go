@@ -10,6 +10,7 @@ import (
 type (
 	TCPIPSegment interface {
 		gopacket.TransportLayer
+		gopacket.SerializableLayer
 		SetNetworkLayerForChecksum(l gopacket.NetworkLayer) error
 	}
 )
@@ -28,14 +29,17 @@ func SerializeDatagram(datagram *gplayers.IPv4) ([]byte, error) {
 
 func SerializeDatagramWithTransportSegment(datagramHeader *gplayers.IPv4, segment gopacket.TransportLayer) ([]byte, error) {
 	setDatagramHeaderDefaultFields(datagramHeader)
-	err := segment.(TCPIPSegment).SetNetworkLayerForChecksum(datagramHeader)
-	if err != nil {
+	tcpipSegment, ok := segment.(TCPIPSegment)
+	if !ok || tcpipSegment == nil {
+		return nil, fmt.Errorf("segment is not a tcpip or is nil: %v", segment.TransportFlow())
+	}
+	if err := tcpipSegment.SetNetworkLayerForChecksum(datagramHeader); err != nil {
 		return nil, fmt.Errorf("error setting network layer for checksum: %w", err)
 	}
 	b, err := serializeLayers(
 		datagramHeader,
-		segment.(gopacket.SerializableLayer),
-		gopacket.Payload(segment.LayerPayload()),
+		tcpipSegment,
+		gopacket.Payload(tcpipSegment.LayerPayload()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error serializing network and transport layers: %w", err)
@@ -46,8 +50,8 @@ func SerializeDatagramWithTransportSegment(datagramHeader *gplayers.IPv4, segmen
 func DeserializeDatagram(buf []byte) (*gplayers.IPv4, error) {
 	// deserialize
 	pkt := gopacket.NewPacket(buf, gplayers.LayerTypeIPv4, gopacket.Lazy)
-	datagram := pkt.NetworkLayer().(*gplayers.IPv4)
-	if datagram == nil || len(datagram.Payload) == 0 { // an IP datagram must always have a payload
+	datagram, ok := pkt.NetworkLayer().(*gplayers.IPv4)
+	if !ok || datagram == nil || len(datagram.Payload) == 0 { // an IP datagram must always have a payload
 		return nil, fmt.Errorf("error deserializing network layer: %w", pkt.ErrorLayer().Error())
 	}
 

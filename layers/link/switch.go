@@ -97,6 +97,10 @@ func (s *switchImpl) run(ctx context.Context) {
 
 	var forwardingTable sync.Map
 	storeRoute := func(macAddress gopacket.Endpoint, portNumber int) {
+		// sync.Map is optimized for write once, read many times.
+		// because switch routes do not change often, we first read
+		// the current value and only update if the new portNumber
+		// is different
 		oldPortNumber, hasOldRoute := forwardingTable.Load(macAddress)
 		if !hasOldRoute || oldPortNumber.(int) != portNumber {
 			forwardingTable.Store(macAddress, portNumber)
